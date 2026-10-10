@@ -1,0 +1,17 @@
+[package]
+name = "filmcraft-web-ui"
+description = "FilmCraft web UI (React + Vite + TypeScript). This is a no-runtime Rust crate that builds a JS bundle via its build script."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[lib]
+# Empty lib; the whole crate is `build.rs` so `cargo build` always runs the
+# npm-side build before reaching for the dist/ output.
+path = "src/lib.rs"
+
+[build-dependencies]
