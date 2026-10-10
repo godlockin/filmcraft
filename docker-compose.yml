@@ -1,0 +1,76 @@
+services:
+  filmcraft-server:
+    # Default: full build (the production / fresh-clone path). This compiles
+    # the entire workspace from source and may take 10-30 minutes the first
+    # time. Use `docker compose --profile prod up --build` to opt in.
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        RUST_VERSION: "1.95"
+        SCCACHE_VERSION: "0.8"
+    image: filmcraft-server:dev
+    container_name: filmcraft-server
+    restart: unless-stopped
+    # Loopback only (AGENTS.md §0: never expose to the public internet by
+    # default). To reach from another host, change the host side of the bind
+    # explicitly, e.g. "0.0.0.0:8080:8080".
+    ports:
+      - "127.0.0.1:8080:8080"
+    env_file:
+      - .env
+    environment:
+      # Hard-code 0.0.0.0 here. We deliberately ignore any FILMCRAFT_LISTEN_ADDR
+      # in .env (which is meant for `cargo run` on the host) so the published
+      # container port is reachable. The host-side `127.0.0.1:8080:8080` is
+      # the boundary that keeps this off the public internet.
+      FILMCRAFT_LISTEN_ADDR: "0.0.0.0:8080"
+      RUST_LOG: ${RUST_LOG:-filmcraft_server=info,tower_http=info}
+    # 4 GiB is the working minimum for the engine: a 1080p project with
+    # several long GOP clips comfortably fits; 8 GiB is comfortable.
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+    healthcheck:
+      test: ["CMD", "/usr/bin/wget", "--quiet", "--spider", "http://127.0.0.1:8080/health"]
+      interval: 15s
+      timeout: 3s
+      start_period: 20s
+      retries: 3
+    profiles:
+      - prod
+
+  filmcraft-server-dev:
+    # Fast dev path: ships a pre-built `target/<profile>/filmcraft-server` from
+    # the host into a thin runtime image. Build with `cargo build -p
+    # filmcraft-server` first, then `docker compose up filmcraft-server-dev`.
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+      args:
+        BINARY: target/debug/filmcraft-server
+    image: filmcraft-server:dev-fast
+    container_name: filmcraft-server-dev
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    env_file:
+      - .env
+    environment:
+      # Hard-code 0.0.0.0 here. We deliberately ignore FILMCRAFT_LISTEN_ADDR
+      # in .env (which is meant for `cargo run` on the host) so the published
+      # container port is reachable. The host-side `127.0.0.1:8080:8080` is
+      # the boundary that keeps this off the public internet.
+      FILMCRAFT_LISTEN_ADDR: "0.0.0.0:8080"
+      RUST_LOG: ${RUST_LOG:-filmcraft_server=info,tower_http=info}
+    healthcheck:
+      test: ["CMD", "/usr/bin/wget", "--quiet", "--spider", "http://127.0.0.1:8080/health"]
+      interval: 15s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+
+networks:
+  default:
+    name: filmcraft-net

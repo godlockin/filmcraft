@@ -5,3 +5,10 @@ plan/
 /log
 .DS_Store
 .claude/worktrees/
+# filmcraft-server local config (per AGENTS.md: never commit credentials)
+.env
+# docker build artefacts local to the host
+docker-compose.override.yml
+# filmcraft-web-ui: build output and npm install footprint (M1.7)
+apps/filmcraft-web-ui/dist/
+apps/filmcraft-web-ui/node_modules/
