@@ -1,0 +1,30 @@
+[package]
+name = "filmcraft-server"
+description = "FilmCraft headless HTTP/WebSocket server (cloud video editing platform)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "filmcraft-server"
+path = "src/main.rs"
+
+[features]
+default = []
+
+[dependencies]
+filmcraft-engine = { workspace = true }
+filmcraft-media = { workspace = true }
+filmcraft-format = { workspace = true }
+filmcraft-project = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
+axum = { version = "0.8", features = ["macros", "ws"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
