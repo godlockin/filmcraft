@@ -1,0 +1,47 @@
+# syntax=docker/dockerfile:1.7
+#
+# FilmCraft server — DEV image.
+#
+# This is a development convenience that bypasses the long Rust build inside
+# the container. It expects a *debug* or *release* binary to already exist at
+# `target/<profile>/filmcraft-server` on the host (built with `cargo build`).
+#
+# Use this when:
+#   - you already iterated locally with `cargo run -p filmcraft-server`, and
+#   - you want to verify the runtime image (wget, tini, user, healthcheck)
+#     without paying the 10-30 minute Rust build inside Docker.
+#
+# For the production / fresh-clone path, use `Dockerfile` (the full builder).
+
+# ---------- runtime ----------
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libssl3 ca-certificates tini wget \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system --gid 1000 filmcraft \
+    && useradd  --system --uid 1000 --gid filmcraft --home /var/lib/filmcraft --shell /usr/sbin/nologin filmcraft \
+    && install -d -o filmcraft -g filmcraft -m 0750 /var/lib/filmcraft
+
+# Build context is the repo root, so `target/<profile>/...` works whether
+# CARGO_TARGET_DIR is the default `target/` or a per-agent subdir.
+ARG BINARY=target/debug/filmcraft-server
+COPY --chown=root:root --chmod=0755 ${BINARY} /usr/local/bin/filmcraft-server
+
+USER filmcraft
+WORKDIR /var/lib/filmcraft
+
+# Loopback by default; override to 0.0.0.0:8080 when running under an
+# orchestrator that publishes 8080 externally. `docker-compose.yml`'s
+# `filmcraft-server-dev` service does this automatically.
+ENV FILMCRAFT_LISTEN_ADDR=127.0.0.1:8080 \
+    RUST_LOG=filmcraft_server=info,tower_http=info
+
+EXPOSE 8080
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["/usr/local/bin/filmcraft-server"]
+
+HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=3 \
+    CMD ["/usr/bin/wget", "--quiet", "--spider", "http://127.0.0.1:8080/health"]
