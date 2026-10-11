@@ -164,6 +164,39 @@ pub async fn download_project(State(api): State<ApiState>, Path(project_id): Pat
 /// caught by the build, not the runtime.
 const OCTET_STREAM: HeaderValue = HeaderValue::from_static("application/octet-stream");
 
+/// GET /api/v1/projects/{project_id}/fcproj
+///
+/// Returns the project's raw `.fcproj` bytes *without* a
+/// `Content-Disposition: attachment` header so a future Zustand store (or
+/// any in-process client) can `JSON.parse` the body straight from
+/// `fetch().arrayBuffer()`.
+///
+/// `current.fcproj` is read through `OssServices::read_file` so we share the
+/// same I/O path and the same `map_store_io_error` translation as
+/// `download_project` (the attachment variant).
+///
+/// Distinct from the auto-load error in [`crate::ws`]: a freshly-created
+/// project (M1.7's `POST /projects` writes the directory but not always
+/// `current.fcproj`) yields a 404 with a clear JSON error rather than a
+/// 500.
+pub async fn get_fcproj(State(api): State<ApiState>, Path(project_id): Path<String>) -> Result<Response> {
+    validate_component("projects", &project_id)?;
+    let path = current_project_path(&api.user_id.0, &project_id);
+    match api.services.read_file(&path) {
+        Ok(bytes) => {
+            let mut headers = HeaderMap::new();
+            headers.insert(axum::http::header::CONTENT_TYPE, OCTET_STREAM);
+            Ok((StatusCode::OK, headers, Body::from(bytes)).into_response())
+        }
+        // 404 on a missing `.fcproj` so a freshly-created project (M1.7's
+        // `POST /projects` writes the dir but not the file in the no-save
+        // case) gets a clear JSON error instead of a generic 5xx. Anything
+        // else propagates through the standard mapper.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(ServerError::NotFound(format!("project `{project_id}` has no saved fcproj yet"))),
+        Err(e) => Err(map_store_io_error(path, e)),
+    }
+}
+
 /// GET /api/v1/projects/{project_id}/export
 #[derive(Serialize)]
 struct ExportInfo {

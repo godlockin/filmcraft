@@ -13,6 +13,11 @@
 //!   - There is no UI thread; the headless server only implements the
 //!     `engine.*` and `perf.*` methods. UI methods return a clear "not
 //!     supported on the headless server" error.
+//!   - Each socket is scoped to a `(user, project)` pair via
+//!     [`ProjectKey`]. The HTTP upgrade handler injects the key from the
+//!     `?project_id=` query parameter; on entry we run `file.open` against
+//!     the project's `.fcproj` so every subsequent command sees the
+//!     project's state, not an empty session.
 //!
 //! Safety (AGENTS.md §0):
 //!   - Bounded line length ([`MAX_LINE`]) so a peer can't allocate without
@@ -30,7 +35,8 @@ use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use serde_json::{Value, json};
 use tracing::warn;
 
-use crate::session::{SessionManager, UserId};
+use crate::api::current_project_path;
+use crate::session::{ProjectKey, SessionManager};
 
 /// Longest accepted request line (bytes, without the newline). Mirrors the
 /// desktop server so a malformed client gets the same behaviour on either
@@ -50,18 +56,32 @@ pub const MAX_CONNECTIONS: usize = 16;
 /// Drive a single accepted WebSocket to completion. The caller (router
 /// handler) has already finished the HTTP→WS upgrade; this owns the
 /// post-upgrade socket.
-pub async fn handle_socket(socket: WebSocket, mgr: Arc<SessionManager>, user_id: UserId) {
+///
+/// On entry we run `file.open` against the project's `.fcproj` (resolved via
+/// [`current_project_path`]). If that fails (no such project, corrupt file,
+/// …) we send one error reply and close the socket — every other command on
+/// this socket would have failed anyway because the engine session is empty,
+/// and we want the client to see *why* the load failed.
+pub async fn handle_socket(socket: WebSocket, mgr: Arc<SessionManager>, key: ProjectKey) {
     let mut socket = socket;
-    // One user per socket for now: every request on this socket runs against
-    // `user_id`. The server's auth layer (M2) will hand us the verified
-    // identity here; today callers inject one (test) or use a placeholder
-    // (production: see `cmd_ws`).
-    let mut greeted = false;
+    let ProjectKey(user_id, project_id) = key.clone();
+
+    // Auto-load the project's current `.fcproj` so `sequence.inspect` and
+    // the rest of the engine command map see real project state from the
+    // first request on this socket.
+    let oss_path = current_project_path(&user_id.0, &project_id.0);
+    if let Err(e) = mgr.execute(key.clone(), "file.open", json!({ "path": oss_path })).await {
+        warn!(user = %user_id.0, project = %project_id.0, error = %e, "ws auto-load failed; closing");
+        let _ = send_json(&mut socket, &json!({ "ok": false, "error": format!("project load failed: {e}") })).await;
+        let _ = socket.send(Message::Close(Some(CloseFrame { code: axum::extract::ws::close_code::POLICY, reason: "project load failed".into() }))).await;
+        return;
+    }
+
     while let Some(msg) = socket.recv().await {
         let msg = match msg {
             Ok(m) => m,
             Err(e) => {
-                warn!(error = %e, user = %user_id.0, "ws recv error; closing");
+                warn!(error = %e, user = %user_id.0, project = %project_id.0, "ws recv error; closing");
                 return;
             }
         };
@@ -76,10 +96,7 @@ pub async fn handle_socket(socket: WebSocket, mgr: Arc<SessionManager>, user_id:
                         socket.send(Message::Close(Some(CloseFrame { code: axum::extract::ws::close_code::POLICY, reason: "frame too large".into() }))).await;
                     return;
                 }
-                if !greeted {
-                    greeted = true;
-                }
-                let replies = handle_text_frame(text.as_str(), &mgr, &user_id).await;
+                let replies = handle_text_frame(text.as_str(), &mgr, &key).await;
                 // Send each reply. The last one may have a "closing the
                 // connection" error which signals we must close after this
                 // frame.
@@ -119,7 +136,7 @@ async fn send_json(socket: &mut WebSocket, value: &Value) -> Result<(), axum::Er
 /// error reply (with `"closing the connection"` in the message so the caller
 /// knows to close the socket) followed by early return — matching the
 /// desktop server's behaviour where a bad line never silently executes.
-async fn handle_text_frame(text: &str, mgr: &SessionManager, user_id: &UserId) -> Vec<Value> {
+async fn handle_text_frame(text: &str, mgr: &SessionManager, key: &ProjectKey) -> Vec<Value> {
     let mut replies = Vec::new();
     for line in split_lines(text) {
         let line = line.trim();
@@ -150,7 +167,7 @@ async fn handle_text_frame(text: &str, mgr: &SessionManager, user_id: &UserId) -
         // 2. Dispatch. The desktop server runs each `*.meth` against a UI
         //    thread; we run `engine.*` against `SessionManager`. UI methods
         //    are answered with a clear error.
-        let reply = dispatch(method, params, mgr, user_id).await;
+        let reply = dispatch(method, params, mgr, key.clone()).await;
         let mut reply = reply;
         if let Some(o) = reply.as_object_mut() {
             o.insert("id".into(), id);
@@ -160,7 +177,7 @@ async fn handle_text_frame(text: &str, mgr: &SessionManager, user_id: &UserId) -
     replies
 }
 
-async fn dispatch(method: &str, params: Value, mgr: &SessionManager, user_id: &UserId) -> Value {
+async fn dispatch(method: &str, params: Value, mgr: &SessionManager, key: ProjectKey) -> Value {
     match method {
         // The two equivalent entries in the desktop protocol share an id;
         // we honour both.
@@ -169,16 +186,16 @@ async fn dispatch(method: &str, params: Value, mgr: &SessionManager, user_id: &U
                 return json!({"ok": false, "error": "missing `command` (or `id`)"});
             };
             let inner = params.get("params").cloned().unwrap_or(json!({}));
-            match mgr.execute(user_id.clone(), command, inner).await {
+            match mgr.execute(key, command, inner).await {
                 Ok(v) => json!({"ok": true, "result": v}),
                 Err(e) => json!({"ok": false, "error": e.to_string()}),
             }
         }
-        "engine.commands" => match mgr.execute(user_id.clone(), "command.list", json!({})).await {
+        "engine.commands" => match mgr.execute(key, "command.list", json!({})).await {
             Ok(v) => json!({"ok": true, "result": v}),
             Err(e) => json!({"ok": false, "error": e.to_string()}),
         },
-        "perf.stats" => match mgr.execute(user_id.clone(), "perf.stats", json!({})).await {
+        "perf.stats" => match mgr.execute(key, "perf.stats", json!({})).await {
             Ok(v) => json!({"ok": true, "result": v}),
             Err(e) => json!({"ok": false, "error": e.to_string()}),
         },
@@ -219,7 +236,7 @@ mod tests {
     #[tokio::test]
     async fn blank_frame_produces_no_replies() {
         let mgr = mgr();
-        let replies = handle_text_frame("", &mgr, &UserId::new("u")).await;
+        let replies = handle_text_frame("", &mgr, &ProjectKey::new("u", "p")).await;
         assert!(replies.is_empty(), "blank should produce no replies, got {replies:?}");
     }
 
@@ -227,7 +244,7 @@ mod tests {
     async fn single_engine_execute_round_trips() {
         let mgr = mgr();
         let frame = r#"{"id":7,"method":"engine.execute","params":{"command":"perf.stats"}}"#;
-        let replies = handle_text_frame(frame, &mgr, &UserId::new("alice")).await;
+        let replies = handle_text_frame(frame, &mgr, &ProjectKey::new("alice", "demo")).await;
         assert_eq!(replies.len(), 1);
         let r = &replies[0];
         assert_eq!(r["id"], 7);
@@ -239,7 +256,7 @@ mod tests {
     async fn multiple_requests_in_one_frame_get_one_reply_each() {
         let mgr = mgr();
         let frame = "{\"id\":1,\"method\":\"engine.commands\"}\n{\"id\":2,\"method\":\"perf.stats\"}\n";
-        let replies = handle_text_frame(frame, &mgr, &UserId::new("u")).await;
+        let replies = handle_text_frame(frame, &mgr, &ProjectKey::new("u", "p")).await;
         assert_eq!(replies.len(), 2, "got {replies:?}");
         assert_eq!(replies[0]["id"], 1);
         assert_eq!(replies[0]["ok"], true);
@@ -251,7 +268,7 @@ mod tests {
     async fn unknown_method_yields_ok_false() {
         let mgr = mgr();
         let frame = r#"{"id":1,"method":"engine.execute","params":{"command":"not.a.real.command"}}"#;
-        let replies = handle_text_frame(frame, &mgr, &UserId::new("u")).await;
+        let replies = handle_text_frame(frame, &mgr, &ProjectKey::new("u", "p")).await;
         assert_eq!(replies.len(), 1);
         assert_eq!(replies[0]["ok"], false);
         assert!(replies[0]["error"].as_str().unwrap().contains("unknown command"));
@@ -261,7 +278,7 @@ mod tests {
     async fn ui_method_is_rejected_with_clear_error() {
         let mgr = mgr();
         let frame = r#"{"id":1,"method":"ui.inspect"}"#;
-        let replies = handle_text_frame(frame, &mgr, &UserId::new("u")).await;
+        let replies = handle_text_frame(frame, &mgr, &ProjectKey::new("u", "p")).await;
         assert_eq!(replies.len(), 1);
         assert_eq!(replies[0]["ok"], false);
         assert!(replies[0]["error"].as_str().unwrap().contains("not supported on the headless server"));
@@ -274,7 +291,7 @@ mod tests {
         // it rejected *before* it runs. Reply must include "closing the
         // connection" so the WS handler knows to close the socket.
         let frame = "POST / HTTP/1.1\r\nHost: 127.0.0.1:9876\r\n\r\n";
-        let replies = handle_text_frame(frame, &mgr, &UserId::new("u")).await;
+        let replies = handle_text_frame(frame, &mgr, &ProjectKey::new("u", "p")).await;
         assert_eq!(replies.len(), 1, "got {replies:?}");
         let err = replies[0]["error"].as_str().unwrap();
         assert!(err.contains("closing the connection"), "got {err}");
@@ -283,7 +300,7 @@ mod tests {
     #[tokio::test]
     async fn non_object_json_emits_close_error_reply() {
         let mgr = mgr();
-        let replies = handle_text_frame("[1,2]\n", &mgr, &UserId::new("u")).await;
+        let replies = handle_text_frame("[1,2]\n", &mgr, &ProjectKey::new("u", "p")).await;
         assert_eq!(replies.len(), 1);
         let err = replies[0]["error"].as_str().unwrap();
         assert!(err.contains("expected a JSON object"), "got {err}");
@@ -293,7 +310,7 @@ mod tests {
     #[tokio::test]
     async fn missing_method_emits_close_error_reply() {
         let mgr = mgr();
-        let replies = handle_text_frame(r#"{"id":1}"#, &mgr, &UserId::new("u")).await;
+        let replies = handle_text_frame(r#"{"id":1}"#, &mgr, &ProjectKey::new("u", "p")).await;
         assert_eq!(replies.len(), 1);
         let err = replies[0]["error"].as_str().unwrap();
         assert!(err.contains("missing string `method`"), "got {err}");
@@ -307,7 +324,7 @@ mod tests {
         // delivered), and junk then short-circuits the frame.
         let mgr = mgr();
         let frame = "{\"id\":1,\"method\":\"perf.stats\"}\nGET / HTTP/1.1\n{\"id\":2,\"method\":\"perf.stats\"}\n";
-        let replies = handle_text_frame(frame, &mgr, &UserId::new("u")).await;
+        let replies = handle_text_frame(frame, &mgr, &ProjectKey::new("u", "p")).await;
         // Two replies: success for id=1, error for junk. The second
         // {"id":2,...} never runs.
         assert_eq!(replies.len(), 2, "got {replies:?}");

@@ -12,4 +12,4 @@ pub mod ws;
 
 pub use error::{Result, ServerError, map_store_io_error};
 pub use services::OssServices;
-pub use session::{SessionHandle, SessionManager, UserId};
+pub use session::{ProjectKey, SessionHandle, SessionManager, UserId};

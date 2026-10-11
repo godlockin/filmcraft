@@ -28,3 +28,11 @@ tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+# WS round-trip integration tests. Pinned to the same version the workspace
+# already pulls in transitively through axum's `ws` feature (see
+# `Cargo.lock`), so no new dependency graph is added for normal builds —
+# only `cargo test -p filmcraft-server` brings it in.
+tokio-tungstenite = "0.29"
+futures-util = "0.3"
