@@ -29,13 +29,13 @@ use axum::Json;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::DefaultBodyLimit;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::http::header::CONTENT_TYPE;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{MethodRouter, delete, get, post};
 use filmcraft_engine::Services;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::net::TcpListener;
 use tokio::signal;
@@ -44,12 +44,14 @@ use tower_http::trace::TraceLayer;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
-use filmcraft_server::{OssServices, Result, ServerError, UserId, map_store_io_error};
+use filmcraft_server::{OssServices, ProjectKey, Result, ServerError, UserId, map_store_io_error};
 
 /// Placeholder user identity used by every handler until M2 wires real
 /// authentication. Centralised here so the M2 change touches one line.
+const ANONYMOUS_USER_ID: &str = "anonymous";
+
 fn anonymous_user() -> UserId {
-    UserId::new("anonymous")
+    UserId::new(ANONYMOUS_USER_ID)
 }
 
 /// Default listen address when `FILMCRAFT_LISTEN_ADDR` is unset. Loopback only
@@ -65,13 +67,17 @@ const DEFAULT_STORE_ROOT: &str = "./data/store";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Static description of the API surface, built once. Kept as a `Value` so
-/// `root_handler` can hand it back without re-allocating on every request.
+/// `api_doc_handler` can hand it back without re-allocating on every request.
+///
+/// Note: there is no entry for `/`. Since M1.7's SPA fallback, `/` is owned
+/// by the React UI (`apps/filmcraft-web-ui/dist/index.html`); the API doc
+/// itself lives at `/api/v1`.
 fn endpoints_payload() -> &'static serde_json::Value {
     static ENDPOINTS: OnceLock<serde_json::Value> = OnceLock::new();
     ENDPOINTS.get_or_init(|| {
         json!({
-            "root":   { "method": "GET",  "path": "/",                  "description": "this payload" },
-            "health": { "method": "GET",  "path": "/health",            "description": "liveness probe (200 = alive)" },
+            "root":   { "method": "GET",  "path": "/api/v1",            "description": "this payload" },
+            "health": { "method": "GET",  "path": "/api/v1/health",     "description": "liveness probe (200 = alive)" },
             "store":  { "method": "GET",  "path": "/api/v1/store/{key}", "description": "read a key from the object store (proof that OssServices is wired)" },
             "store_put": { "method": "PUT", "path": "/api/v1/store/{key}", "description": "write a key to the object store" },
             "ws": { "method": "GET", "path": "/api/v1/ws", "description": "WebSocket upgrade carrying the headless control protocol" },
@@ -83,6 +89,7 @@ fn endpoints_payload() -> &'static serde_json::Value {
             "project_media_list":   { "method": "GET",  "path": "/api/v1/projects/{project_id}/media", "description": "list media files in the project" },
             "project_export_info":  { "method": "GET",  "path": "/api/v1/projects/{project_id}/export", "description": "export metadata + download URL (M1.6 returns the .fcproj; M1.11 will return the rendered mp4)" },
             "project_export_file":  { "method": "GET",  "path": "/api/v1/projects/{project_id}/export.fcproj", "description": "download the current project file as an attachment" },
+            "project_fcproj":       { "method": "GET",  "path": "/api/v1/projects/{project_id}/fcproj", "description": "raw `.fcproj` bytes without Content-Disposition (for in-process clients; M2.1)" },
         })
     })
 }
@@ -155,8 +162,10 @@ async fn try_main() -> Result<()> {
     };
 
     let app = Router::new()
-        .route("/", get(root_handler))
-        .route("/health", get(health_handler))
+        // `/` is intentionally un-routed: see `endpoints_payload()` for why
+        // (SPA fallback serves `index.html` for the React UI).
+        .route("/api/v1", get(api_doc_handler))
+        .route("/api/v1/health", get(health_handler))
         .route("/api/v1/store/{*key}", get(store_get).put(store_put))
         .route("/api/v1/ws", get(ws_upgrade))
         // Project CRUD (M1.7). `GET /api/v1/projects` and the `POST` variant
@@ -176,6 +185,11 @@ async fn try_main() -> Result<()> {
         .route("/api/v1/projects/{project_id}/media/{filename}", get(filmcraft_server::api::media::stream_media))
         .route("/api/v1/projects/{project_id}/export", get(filmcraft_server::api::export_info))
         .route("/api/v1/projects/{project_id}/export.fcproj", get(filmcraft_server::api::download_project))
+        // Raw `.fcproj` for in-process consumers (M2.1). Same payload as the
+        // `/export.fcproj` attachment endpoint but without
+        // `Content-Disposition: attachment`, so a Zustand store can
+        // `JSON.parse(fetch(...).arrayBuffer())` straight off the wire.
+        .route("/api/v1/projects/{project_id}/fcproj", get(filmcraft_server::api::get_fcproj))
         // Permissive CORS — fine because the server binds to loopback by default
         // (AGENTS.md §0) and any public deployment should put a reverse proxy
         // (nginx/Aliyun SLB) in front. Per the "frontend-backend separation"
@@ -300,7 +314,7 @@ fn resolve_store_root() -> Result<PathBuf> {
     Ok(PathBuf::from(raw))
 }
 
-async fn root_handler(State(state): State<AppState>) -> impl IntoResponse {
+async fn api_doc_handler(State(state): State<AppState>) -> impl IntoResponse {
     let payload =
         RootPayload { status: "ok", version: SERVER_VERSION, uptime_secs: state.started_at.elapsed().as_secs(), endpoints: endpoints_payload().clone() };
     (StatusCode::OK, Json(payload))
@@ -330,16 +344,36 @@ async fn store_put(State(state): State<AppState>, Path(key): Path<String>, body:
     }
 }
 
+/// `?project_id=` query parameter for the WebSocket upgrade. The project id
+/// is component-validated up front so a bad value is a 400, not a silent
+/// session split.
+#[derive(Debug, Deserialize)]
+struct WsQuery {
+    #[serde(default)]
+    project_id: Option<String>,
+}
+
 /// WebSocket upgrade handler. Hands the upgraded socket to the WS bridge,
 /// which then runs the control protocol against `SessionManager`.
 ///
+/// The `?project_id=` query parameter picks which `(user, project)` session
+/// the engine commands run against — two browser tabs opening WS with
+/// different `project_id` values get fully isolated engine state. The
+/// project id is validated at the HTTP boundary so a bad value is a 400
+/// rather than a silently-rewritten key.
+///
 /// No authentication yet: every connection is treated as the placeholder
 /// `UserId::new("anonymous")`. M2 (auth) will replace this.
-async fn ws_upgrade(State(state): State<AppState>, ws: axum::extract::ws::WebSocketUpgrade) -> impl IntoResponse {
+async fn ws_upgrade(State(state): State<AppState>, Query(q): Query<WsQuery>, ws: axum::extract::ws::WebSocketUpgrade) -> Result<axum::response::Response> {
+    let Some(project_id) = q.project_id else {
+        return Err(ServerError::BadRequest("missing `project_id` query parameter".into()));
+    };
+    filmcraft_server::api::validate_component("project_id", &project_id)?;
+    let key = ProjectKey::new(ANONYMOUS_USER_ID, project_id);
     let mgr = Arc::clone(&state.sessions);
-    ws.on_upgrade(move |socket| async move {
-        filmcraft_server::ws::handle_socket(socket, mgr, anonymous_user()).await;
-    })
+    Ok(ws.on_upgrade(move |socket| async move {
+        filmcraft_server::ws::handle_socket(socket, mgr, key).await;
+    }))
 }
 
 /// Wait for SIGINT (Ctrl-C) or SIGTERM. Returns when either arrives.
@@ -370,6 +404,9 @@ mod tests {
     use super::*;
     use axum::http::Request;
     use tower::ServiceExt;
+    // WS round-trip tests need `send` (Sink) and `next` (Stream) on the
+    // `WebSocketStream` returned by `tokio_tungstenite::connect_async`.
+    use futures_util::{SinkExt, StreamExt};
 
     fn test_state() -> AppState {
         let root = std::env::temp_dir().join(format!("filmcraft-server-test-{}-{}", std::process::id(), uuid_tag()));
@@ -392,8 +429,8 @@ mod tests {
 
     fn app(state: AppState) -> Router {
         Router::new()
-            .route("/", get(root_handler))
-            .route("/health", get(health_handler))
+            .route("/api/v1", get(api_doc_handler))
+            .route("/api/v1/health", get(health_handler))
             .route("/api/v1/store/{*key}", get(store_get).put(store_put))
             .route("/api/v1/ws", get(ws_upgrade))
             .route("/api/v1/projects", get(filmcraft_server::api::projects::list_projects).post(filmcraft_server::api::projects::create_project))
@@ -406,25 +443,38 @@ mod tests {
             .route("/api/v1/projects/{project_id}/media/{filename}", get(filmcraft_server::api::media::stream_media))
             .route("/api/v1/projects/{project_id}/export", get(filmcraft_server::api::export_info))
             .route("/api/v1/projects/{project_id}/export.fcproj", get(filmcraft_server::api::download_project))
+            .route("/api/v1/projects/{project_id}/fcproj", get(filmcraft_server::api::get_fcproj))
             .layer(TraceLayer::new_for_http())
             .with_state(state)
     }
 
     #[tokio::test]
-    async fn root_returns_ok_with_endpoints() {
-        let resp = app(test_state()).oneshot(Request::builder().uri("/").body(Body::empty()).unwrap()).await.unwrap();
+    async fn api_doc_returns_endpoint_manifest() {
+        // M1.7 follow-up: `/` is owned by the SPA fallback, so the API
+        // manifest itself moved to `GET /api/v1`.
+        let resp = app(test_state()).oneshot(Request::builder().uri("/api/v1").body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["status"], "ok");
         assert_eq!(body["version"], SERVER_VERSION);
-        assert!(body["endpoints"]["health"].is_object());
-        assert!(body["endpoints"]["store"].is_object());
+        // Manifest must agree with the live routes. Derive the expected
+        // key set from `endpoints_payload()` (the single source of truth)
+        // so adding a new endpoint here doesn't silently desync the test.
+        let endpoints = body["endpoints"].as_object().expect("endpoints is an object");
+        let expected_keys: std::collections::BTreeSet<&str> =
+            endpoints_payload().as_object().expect("endpoints_payload is an object").keys().map(String::as_str).collect();
+        let actual_keys: std::collections::BTreeSet<&str> = endpoints.keys().map(String::as_str).collect();
+        assert_eq!(actual_keys, expected_keys, "manifest key set drifted from endpoints_payload()");
+        // Spot-checks against the legacy `/` and `/health` paths that the
+        // SPA fallback reshuffle retired.
+        assert_eq!(endpoints["health"]["path"], "/api/v1/health");
+        assert_eq!(endpoints["root"]["path"], "/api/v1");
     }
 
     #[tokio::test]
     async fn health_returns_200() {
-        let resp = app(test_state()).oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap()).await.unwrap();
+        let resp = app(test_state()).oneshot(Request::builder().uri("/api/v1/health").body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
@@ -723,5 +773,266 @@ mod tests {
         assert_eq!(cr, "bytes 4-11/32");
         let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
         assert_eq!(&bytes[..], &body[4..12]);
+    }
+
+    /// M2.1: WS upgrade is rejected at the HTTP layer (400) when the
+    /// `?project_id=` query parameter fails `validate_component`. The
+    /// socket must never reach `handle_socket` in this case.
+    #[tokio::test]
+    async fn ws_route_rejects_invalid_project_id() {
+        let resp = app(test_state()).oneshot(Request::builder().uri("/api/v1/ws?project_id=..%2Fetc").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "traversal in project_id must yield 400");
+    }
+
+    /// M2.1: WS upgrade is rejected at the HTTP layer (400) when the
+    /// `?project_id=` query parameter is missing entirely.
+    #[tokio::test]
+    async fn ws_route_rejects_missing_project_id() {
+        let resp = app(test_state()).oneshot(Request::builder().uri("/api/v1/ws").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "missing project_id must yield 400");
+    }
+
+    /// M2.1: `GET /api/v1/projects/{id}/fcproj` returns the raw bytes that
+    /// the project's `current.fcproj` contains, with the correct
+    /// `application/octet-stream` content type and *no*
+    /// `Content-Disposition: attachment` header. A future Zustand store
+    /// parses this body straight from `fetch().arrayBuffer()`.
+    #[tokio::test]
+    async fn fcproj_endpoint_returns_raw_blob() {
+        let state = test_state();
+        // Seed the project by POSTing it (M1.7 writes `current.fcproj`).
+        let resp = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/projects")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"id":"raw","name":"Raw"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        // Read the raw bytes back and compare.
+        let resp = app(state.clone()).oneshot(Request::builder().uri("/api/v1/projects/raw/fcproj").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+        assert_eq!(ct, "application/octet-stream", "raw endpoint must use octet-stream, got {ct}");
+        // No Content-Disposition: the whole point of this endpoint.
+        assert!(resp.headers().get("content-disposition").is_none(), "raw endpoint must not set Content-Disposition");
+
+        // The body must equal what the create wrote. Use the same path
+        // the create used to seed the body so we don't have to hardcode
+        // the engine's serialisation format.
+        let body = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+        let expected_bytes = filmcraft_format::encode(&filmcraft_project::Project::new("Raw"), true);
+        assert_eq!(body.as_ref(), expected_bytes.as_slice(), "raw body must equal the seeded `.fcproj`");
+    }
+
+    /// M2.1: `GET /api/v1/projects/{id}/fcproj` returns 404 for a project
+    /// that has no `current.fcproj` on disk (distinct from "the project
+    /// doesn't exist at all", which would be a different error path).
+    #[tokio::test]
+    async fn fcproj_endpoint_404_when_no_save() {
+        // Note: M1.7's POST /projects *always* writes `current.fcproj`, so
+        // a project that was created by other means (a real user could
+        // construct the dir but not the file) is hard to set up through
+        // the HTTP API alone. We test the path by pointing at a project
+        // id that simply doesn't exist.
+        let resp = app(test_state()).oneshot(Request::builder().uri("/api/v1/projects/never-saved/fcproj").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "missing fcproj must yield 404");
+        let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let j: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(j["ok"], false);
+        // The 404 response wraps the descriptive string in
+        // `ServerError::NotFound`'s JSON shape (`"not found: ..."`), so the
+        // substring we're after sits inside that envelope.
+        let err = j["error"].as_str().unwrap();
+        assert!(err.contains("never-saved") && err.contains("no saved fcproj"), "error must mention the missing project and the no-save cause, got {err:?}");
+    }
+
+    // ----- WebSocket round-trip tests (M2.1 acceptance) ----------------
+    //
+    // These exercise the full upgrade path: an in-process
+    // `tokio_tungstenite` client dials the bound port, sends JSON-lines
+    // requests, and reads JSON-lines replies. They cover the cases the
+    // plan §"Test plan" called out as manual smoke but that we now want
+    // to lock down in CI:
+    //
+    //   - WS upgrade succeeds, auto-load runs, an engine command runs
+    //     against the *project's* session (not "no sequence open").
+    //   - WS upgrade succeeds, auto-load fails on a missing `.fcproj`,
+    //     client gets one error frame + a clean close.
+    //   - Two WS connections to *different* `?project_id=` stay
+    //     isolated: a `prefs.set` on one must not be visible on the
+    //     other.
+
+    /// Bind a fresh router to a random localhost port and return the
+    /// `ws://` URL the test should dial. The server task is spawned on
+    /// the test's tokio handle and dropped when the test ends.
+    async fn ws_server(state: AppState) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let router = app(state).into_make_service();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        format!("ws://{addr}/api/v1/ws")
+    }
+
+    /// `ws://` upgrade for an unknown project: the `.fcproj` doesn't
+    /// exist, so `handle_socket`'s auto-load fails and the client must
+    /// see one `{"ok":false,"error":"project load failed: ..."}` frame
+    /// followed by a clean close frame (Close code 1008).
+    #[tokio::test]
+    async fn ws_with_unknown_project_sends_error_and_closes() {
+        let url = ws_server(test_state()).await;
+        let (mut sock, _upgrade) = tokio_tungstenite::connect_async(format!("{url}?project_id=ghost")).await.unwrap();
+
+        // Frame 1: the auto-load error.
+        let frame = sock.next().await.unwrap().unwrap();
+        match frame {
+            tokio_tungstenite::tungstenite::Message::Text(s) => {
+                let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+                assert_eq!(v["ok"], false, "auto-load must yield ok:false, got {v}");
+                assert!(v["error"].as_str().unwrap().contains("project load failed"), "error must explain the load failure, got {v:?}");
+            }
+            other => panic!("expected a text frame with the auto-load error, got {other:?}"),
+        }
+
+        // Frame 2: a Close frame carrying the policy-violation code.
+        let frame = sock.next().await.unwrap().unwrap();
+        match frame {
+            tokio_tungstenite::tungstenite::Message::Close(close) => {
+                let code = close.expect("close frame must carry a CloseFrame").code;
+                // 1008 = "policy violation" (axum's ws::close_code::POLICY).
+                assert_eq!(u16::from(code), 1008, "close frame must carry POLICY (1008), got {code}");
+            }
+            other => panic!("expected a close frame after the auto-load error, got {other:?}"),
+        }
+    }
+
+    /// `ws://` upgrade for a known project: after auto-load the engine
+    /// session has the project's `.fcproj` loaded, so a
+    /// `sequence.inspect` returns project state. Critically, *not*
+    /// `"no sequence open"` — that's the failure mode M2.1 fixes.
+    #[tokio::test]
+    async fn ws_with_valid_project_loads_and_runs_command() {
+        let state = test_state();
+
+        // Seed `current.fcproj` *directly* under the path the WS bridge
+        // will read from. The HTTP `POST /projects` writes under the
+        // `test` user, but the WS bridge's `anonymous_user()` writes/
+        // reads under `anonymous`, so going through the HTTP endpoint
+        // would put the file in the wrong tree and the auto-load would
+        // legitimately fail. The point of this test is the engine
+        // round-trip, not the HTTP seeding path (which
+        // `fcproj_endpoint_returns_raw_blob` already covers).
+        let oss_path = filmcraft_server::api::current_project_path("anonymous", "smoke");
+        let bytes = filmcraft_format::encode(&filmcraft_project::Project::new("Smoke"), true);
+        state.services.write_file(&oss_path, &bytes).unwrap();
+
+        let url = ws_server(state).await;
+        let (mut sock, _upgrade) = tokio_tungstenite::connect_async(format!("{url}?project_id=smoke")).await.unwrap();
+
+        // Send `engine.execute("perf.stats")`. `perf.stats` is the
+        // cheapest always-enabled command, so it acts as a smoke that
+        // the engine session is alive and the WS bridge is wired.
+        sock.send(tokio_tungstenite::tungstenite::Message::Text(r#"{"id":1,"method":"engine.execute","params":{"command":"perf.stats"}}"#.into()))
+            .await
+            .unwrap();
+
+        let frame = sock.next().await.unwrap().unwrap();
+        match frame {
+            tokio_tungstenite::tungstenite::Message::Text(s) => {
+                let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+                assert_eq!(v["id"], 1);
+                assert_eq!(v["ok"], true, "perf.stats after auto-load must succeed, got {v}");
+                assert!(v["result"].is_object(), "perf.stats returns an object, got {v:?}");
+            }
+            other => panic!("expected a text reply to perf.stats, got {other:?}"),
+        }
+
+        // Clean shutdown.
+        sock.close(None).await.unwrap();
+    }
+
+    /// Two WS clients on the *same* server but different `?project_id=`
+    /// must have isolated engine sessions: a `prefs.set` on socket A
+    /// must not bleed into socket B's `prefs.get`. This is the exact
+    /// regression M2.1 ships — without the composite key, both sockets
+    /// would mutate one engine session and the test would fail.
+    #[tokio::test]
+    async fn two_ws_isolation_no_cross_pollution() {
+        let state = test_state();
+        // Seed two distinct projects directly under the `anonymous`
+        // user tree (where the WS bridge reads/writes). Going through
+        // `POST /projects` would seed under the `test` user that
+        // `ApiState` uses — fine for HTTP-only tests, but the WS bridge
+        // runs as `anonymous` and would not find the files.
+        for id in ["alpha", "beta"] {
+            let oss_path = filmcraft_server::api::current_project_path("anonymous", id);
+            let bytes = filmcraft_format::encode(&filmcraft_project::Project::new(id), true);
+            state.services.write_file(&oss_path, &bytes).unwrap();
+        }
+
+        let url = ws_server(state).await;
+
+        // Open both sockets.
+        let (mut sock_a, _) = tokio_tungstenite::connect_async(format!("{url}?project_id=alpha")).await.unwrap();
+        let (mut sock_b, _) = tokio_tungstenite::connect_async(format!("{url}?project_id=beta")).await.unwrap();
+
+        // Socket A: set a unique preference key to "true".
+        sock_a
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                r#"{"id":1,"method":"engine.execute","params":{"command":"prefs.set","params":{"key":"autoSave.enabled","value":true}}}"#.into(),
+            ))
+            .await
+            .unwrap();
+        // Socket B: set the same key to "false".
+        sock_b
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                r#"{"id":1,"method":"engine.execute","params":{"command":"prefs.set","params":{"key":"autoSave.enabled","value":false}}}"#.into(),
+            ))
+            .await
+            .unwrap();
+
+        // Drain both replies — they should each be `ok:true`.
+        async fn recv_one(sock: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>) -> serde_json::Value {
+            match sock.next().await.unwrap().unwrap() {
+                tokio_tungstenite::tungstenite::Message::Text(t) => serde_json::from_str(&t).unwrap(),
+                other => panic!("expected text reply, got {other:?}"),
+            }
+        }
+        assert_eq!(recv_one(&mut sock_a).await["ok"], true, "A's prefs.set must succeed");
+        assert_eq!(recv_one(&mut sock_b).await["ok"], true, "B's prefs.set must succeed");
+
+        // Now read back the key on each side. A must see true, B must see
+        // false. If the composite key were broken (i.e. both sockets
+        // shared one engine session), whichever `prefs.set` ran last
+        // would win both sides.
+        sock_a
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                r#"{"id":2,"method":"engine.execute","params":{"command":"prefs.get","params":{"key":"autoSave.enabled"}}}"#.into(),
+            ))
+            .await
+            .unwrap();
+        sock_b
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                r#"{"id":2,"method":"engine.execute","params":{"command":"prefs.get","params":{"key":"autoSave.enabled"}}}"#.into(),
+            ))
+            .await
+            .unwrap();
+
+        let v_a = recv_one(&mut sock_a).await;
+        let v_b = recv_one(&mut sock_b).await;
+        assert_eq!(v_a["ok"], true, "A's prefs.get must succeed, got {v_a}");
+        assert_eq!(v_b["ok"], true, "B's prefs.get must succeed, got {v_b}");
+        assert_eq!(v_a["result"], serde_json::json!(true), "alpha must still see true");
+        assert_eq!(v_b["result"], serde_json::json!(false), "beta must still see false");
+
+        sock_a.close(None).await.unwrap();
+        sock_b.close(None).await.unwrap();
     }
 }
