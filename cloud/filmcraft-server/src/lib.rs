@@ -8,8 +8,10 @@ pub mod api;
 pub mod error;
 pub mod services;
 pub mod session;
+pub mod versioning;
 pub mod ws;
 
 pub use error::{Result, ServerError, map_store_io_error};
 pub use services::OssServices;
 pub use session::{ProjectKey, SessionHandle, SessionManager, UserId};
+pub use versioning::{HistoryEntry, ProjectMeta, SaveOutcome, Versioner};

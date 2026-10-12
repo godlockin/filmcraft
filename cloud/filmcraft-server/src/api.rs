@@ -39,6 +39,7 @@ pub mod media;
 pub mod paths;
 pub mod projects;
 pub mod sniff;
+pub mod versioning;
 
 pub use paths::{current_project_path, media_dir_key, media_path, validate_component};
 pub use sniff::{looks_like_known_other, looks_like_mp4, sniff_content_type};

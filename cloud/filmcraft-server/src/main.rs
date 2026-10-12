@@ -90,6 +90,15 @@ fn endpoints_payload() -> &'static serde_json::Value {
             "project_export_info":  { "method": "GET",  "path": "/api/v1/projects/{project_id}/export", "description": "export metadata + download URL (M1.6 returns the .fcproj; M1.11 will return the rendered mp4)" },
             "project_export_file":  { "method": "GET",  "path": "/api/v1/projects/{project_id}/export.fcproj", "description": "download the current project file as an attachment" },
             "project_fcproj":       { "method": "GET",  "path": "/api/v1/projects/{project_id}/fcproj", "description": "raw `.fcproj` bytes without Content-Disposition (for in-process clients; M2.1)" },
+            // Project versioning (M2.9). The lock/save/unlock triplet is
+            // the round-trip from a local `.fcproj` described in
+            // `docs/filmcraft-server.md` §2.3; `history` is the
+            // append-only revision log.
+            "project_lock":    { "method": "POST", "path": "/api/v1/projects/{project_id}/lock",              "description": "take the write lock; body / X-FilmCraft-Lock-Token: {locker}; returns 400 if another writer holds it" },
+            "project_unlock":  { "method": "POST", "path": "/api/v1/projects/{project_id}/unlock",            "description": "release the write lock; 204 whether or not a lock was held" },
+            "project_save":    { "method": "POST", "path": "/api/v1/projects/{project_id}/save",              "description": "commit a new revision; body is the raw .fcproj bytes, headers X-FilmCraft-Lock-Token + X-FilmCraft-Expected-Rev" },
+            "project_history": { "method": "GET",  "path": "/api/v1/projects/{project_id}/history",           "description": "list every saved revision as [{rev, size}], oldest first" },
+            "project_history_get": { "method": "GET",  "path": "/api/v1/projects/{project_id}/history/{rev}", "description": "read a specific revision body as raw .fcproj bytes" },
         })
     })
 }
@@ -190,6 +199,17 @@ async fn try_main() -> Result<()> {
         // `Content-Disposition: attachment`, so a Zustand store can
         // `JSON.parse(fetch(...).arrayBuffer())` straight off the wire.
         .route("/api/v1/projects/{project_id}/fcproj", get(filmcraft_server::api::get_fcproj))
+        // Project versioning (M2.9). The three write endpoints share the
+        // same 200 MiB body cap as the legacy media-upload route; the
+        // GETs are well under the default 2 MiB cap.
+        .route(
+            "/api/v1/projects/{project_id}/save",
+            post(filmcraft_server::api::versioning::save_project).layer(DefaultBodyLimit::max(filmcraft_server::api::MAX_UPLOAD_BYTES)),
+        )
+        .route("/api/v1/projects/{project_id}/lock", post(filmcraft_server::api::versioning::lock_project))
+        .route("/api/v1/projects/{project_id}/unlock", post(filmcraft_server::api::versioning::unlock_project))
+        .route("/api/v1/projects/{project_id}/history", get(filmcraft_server::api::versioning::list_history))
+        .route("/api/v1/projects/{project_id}/history/{rev}", get(filmcraft_server::api::versioning::read_history))
         // Permissive CORS — fine because the server binds to loopback by default
         // (AGENTS.md §0) and any public deployment should put a reverse proxy
         // (nginx/Aliyun SLB) in front. Per the "frontend-backend separation"
@@ -444,6 +464,17 @@ mod tests {
             .route("/api/v1/projects/{project_id}/export", get(filmcraft_server::api::export_info))
             .route("/api/v1/projects/{project_id}/export.fcproj", get(filmcraft_server::api::download_project))
             .route("/api/v1/projects/{project_id}/fcproj", get(filmcraft_server::api::get_fcproj))
+            // Project versioning (M2.9). Same routes as the production
+            // router above so per-test integration hits the same
+            // wiring.
+            .route(
+                "/api/v1/projects/{project_id}/save",
+                post(filmcraft_server::api::versioning::save_project).layer(DefaultBodyLimit::max(filmcraft_server::api::MAX_UPLOAD_BYTES)),
+            )
+            .route("/api/v1/projects/{project_id}/lock", post(filmcraft_server::api::versioning::lock_project))
+            .route("/api/v1/projects/{project_id}/unlock", post(filmcraft_server::api::versioning::unlock_project))
+            .route("/api/v1/projects/{project_id}/history", get(filmcraft_server::api::versioning::list_history))
+            .route("/api/v1/projects/{project_id}/history/{rev}", get(filmcraft_server::api::versioning::read_history))
             .layer(TraceLayer::new_for_http())
             .with_state(state)
     }

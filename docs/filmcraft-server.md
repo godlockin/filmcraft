@@ -5,9 +5,10 @@
 > should be deployable on any cloud (Aliyun, AWS, self-hosted) without code forks
 > and without changes to the upstream desktop codebase.
 
-**Document state.** M2.5 — surface definition + spec refresh.
-**Last updated.** 2026-10-12 (post-M2.4 cloud/ subtree extraction).
-**Prior version.** 2026-10-08 (M1 spec, Aliyun-oriented; superseded in vendor-neutrality, not in intent).
+**Document state.** M2.9 — versioning round-trip wired.
+**Last updated.** 2026-10-12 (post-M2.9 `meta.json` + `history/*.fcproj` API).
+**Prior version.** 2026-10-12 (M2.5 — surface definition + spec refresh).
+**Prior-prior version.** 2026-10-08 (M1 spec, Aliyun-oriented; superseded in vendor-neutrality, not in intent).
 
 ---
 
@@ -55,7 +56,7 @@ vertical:
 
 - Object storage backend — local FS only; S3/OSS/GCS not wired.
 - Authentication — placeholder anonymous user; no token, cookie, or OAuth flow.
-- Project versioning — no history or pessimistic-lock; auto-save + crash-recovery exist for the desktop engine but aren't stitched into the server's project file persistence.
+- Project versioning — `meta.json` + `history/*.fcproj` with `O_EXCL`-flavoured lock + CAS on `meta.locked_by` (M2.9) are wired in the server, but the desktop engine's in-session auto-save / journal still isn't integrated. A server crash between `save` and a `lock` for a follow-up edit can drop unsaved edits; the engine's journal is the fix and is the gap above.
 - Telemetry — none; `OssServices` doesn't emit traces for store I/O, `SessionManager` doesn't record command latency.
 - Export pipeline — `POST /api/v1/projects/{id}/export` returns metadata only (M1.6); actual long-running encode is a separate worker surface.
 - AI sidecar — chat box stub only; no `engine.execute` plumbing.
@@ -92,7 +93,39 @@ choices below are implementation, not surface.
   (M1.3b-S3, AWS / MinIO / LocalStack), `OssServices` (M1.3b-OSS, Aliyun),
   `GcsServices` (later). All four speak `oss://filmcraft/...` paths.
 
-### 2.3 Media
+### 2.3 Project versioning (M2.9)
+
+The round-trip from a local `.fcproj` to a server-backed history — and
+back to a local copy — is:
+
+1. **Open.** Client reads `GET /api/v1/projects/{id}/fcproj`. The body is
+   the raw `.fcproj` bytes (no `Content-Disposition`); a desktop app
+   can `JSON.parse` it directly. Missing head → 404.
+2. **Lock.** Client posts `POST /api/v1/projects/{id}/lock` with
+   `{"locker": "<opaque>"}`. The server flips `meta.locked_by` from
+   `null` to the locker id via a strict `O_EXCL`-style create when the
+   file is missing and a CAS read-compare-write when it pre-exists.
+   `409`-style conflict on a held-by-other.
+3. **Save.** Client posts `POST /api/v1/projects/{id}/save` with the new
+   `.fcproj` body (header mode: `X-FilmCraft-Lock-Token` +
+   `X-FilmCraft-Expected-Rev`; JSON mode: `application/json` envelope).
+   The server writes `history/{n}.fcproj`, mirrors to `current.fcproj`,
+   then commits a CAS on `meta.json` that bumps `rev` and clears
+   `locked_by` in one step. `400` on a wrong locker, a stale rev, or a
+   concurrent `meta.json` rewrite.
+4. **History.** Client reads `GET /api/v1/projects/{id}/history` for
+   the rev list, then `GET .../history/{rev}` for any past revision.
+5. **Release.** Client posts `POST .../unlock`; idempotent — 204 whether
+   or not a lock was actually held.
+
+Implementation: `cloud/filmcraft-server/src/versioning.rs` (domain,
+87 lib-tests) + `cloud/filmcraft-server/src/api/versioning.rs` (HTTP
+surface, 8 lib-tests covering lock / save / unlock / history). The
+acceptance path (lock + save twice + read history) lives in
+`versioning::tests::lock_then_save_then_list_history_round_trip` and
+the HTTP twin in `api::versioning::tests::save_returns_201_with_new_rev_and_history_key`.
+
+### 2.4 Media
 
 - **Surface.** Upload (`POST /api/v1/projects/{id}/media`, multipart, 1 GiB per file cap, total 100 GiB per user ceiling), list (`GET .../media`),
   stream (`GET .../media/{filename}` with HTTP Range, 206).
@@ -102,7 +135,7 @@ choices below are implementation, not surface.
   engine can re-import the file locally on a different deployment without a
   re-upload.
 
-### 2.4 Sessions
+### 2.5 Sessions
 
 - Surface: `SessionManager<Auth, Services, Frame>`. Per-`(user, project)` engine
   session, lazily created, evicted by LRU + idle TTL (default 30 min), warmed by
@@ -114,7 +147,7 @@ choices below are implementation, not surface.
   `meta.json`'s `locked_by`. One user's tab can hold the editor lock; another
   sees "read-only"; a third can fork (M3.x).
 
-### 2.5 Commands (the engine surface over WS)
+### 2.6 Commands (the engine surface over WS)
 
 - **Transport.** WebSocket at `/api/v1/ws?project_id=...` — one WS per tab,
   server auto-loads the project on connect (M2.1).
@@ -128,7 +161,7 @@ choices below are implementation, not surface.
 - **Catalog.** Server returns the live `command_list` filtered by what the
   current role can run (viewer ⇒ only read-only commands); M3.x.
 
-### 2.6 Exports
+### 2.7 Exports
 
 - **Surface.** Two phases:
   1. `POST /api/v1/projects/{id}/export { preset, start_tick, end_tick }` ⇒
@@ -140,7 +173,7 @@ choices below are implementation, not surface.
   the WS the request came in on; the server also publishes the job to a shared
   queue so a separate worker process can take ownership of long encodes.
 
-### 2.7 Telemetry / observability
+### 2.8 Telemetry / observability
 
 - **Engine traces.** Every `Session::execute` is wrapped in `TracingSession`,
   which records `{user_id, command, params_hash, latency_ms, success, error}`,
@@ -152,7 +185,7 @@ choices below are implementation, not surface.
 - **Health.** `GET /api/v1/health` ⇒ 200 if alive, 503 if any subsystem
   (OSS adapter, SessionManager) can't talk to its backing.
 
-### 2.8 Deployment topology (pluggable)
+### 2.9 Deployment topology (pluggable)
 
 The 2026-10-08 spec committed to SAE (Aliyun). Generalising that for M2.5:
 
@@ -170,7 +203,7 @@ never knows which cloud it's on. This is enforced by *all* vendor SDKs being
 behind `opendal` (storage) or `reqwest` (HTTP), and the in-process worker being
 its first implementation.
 
-### 2.9 Engine coverage
+### 2.10 Engine coverage
 
 The web UI does not, today, drive every engine command. Boundaries in M2.5:
 
@@ -186,7 +219,7 @@ The Engine Console is the *escape hatch*: any feature the web UI doesn't
 expose can be driven from a panel by command id. So M2.x's job is to *grow*
 the UI, not invent new engine commands.
 
-### 2.10 Local ↔ cloud round-trip
+### 2.11 Local ↔ cloud round-trip
 
 - **Surface.** `GET /api/v1/projects/{id}/fcproj` (raw; `Content-Type: application/json; charset=utf-8`, no `Content-Disposition`) and `GET /api/v1/projects/{id}/export.fcproj` (attachment). Symmetric `POST` is out of scope for M1.x; the round-trip is *download-only* until an interchange story is built (M3.x).
 - **What it proves.** The file round-trips on its own; the *media* round-trips
@@ -248,8 +281,8 @@ builder, and any vendor SDK is feature-flagged so the dev build never pulls it.
 | **M2.5** | This document — product surface (vendor-neutral) | ✅ done |
 | **M2.6** | `S3Services` (M1.3b-S3) behind feature flag; identical trait surface to `OssServices`; same tests | ⏭ next |
 | **M2.7** | `OssServices` Aliyun-OSS variant (M1.3b-OSS) via `opendal`; reuse M2.6 test suite | ⏭ |
-| **M2.8** | Engine Console: command palette, role-aware filtering, persistence of recent commands | ⏭ |
-| **M2.9** | Project versioning: `meta.json` + `history/*.fcproj`; CLI verifier from local `.fcproj` round-trip | ⏭ |
+| **M2.8** | Engine Console: command palette, role-aware filtering, persistence of recent commands | ✅ 2026-10-12 |
+| **M2.9** | Project versioning: `meta.json` + `history/*.fcproj`; locks/save via `O_EXCL` CAS on `meta.locked_by`; round-trip GET/POST `/api/v1/projects/{id}/fcproj` + `lock` + `save` | ✅ 2026-10-12 |
 | **M2.10** | Telemetry: `TracingSession` + HTTP `request_id`; JSONL sink with rotation | ⏭ |
 | **M3.1** | Auth: dev single-user token; `AuthResolver` trait; default to "anonymous" until M3.2 | ⏭ |
 | **M3.2** | Auth: username + bcrypt; `users/{u}/profile.json` in OSS | ⏭ |
