@@ -214,7 +214,7 @@ async fn try_main() -> Result<()> {
 /// "no UI built" when the directory is missing.
 fn resolve_web_ui_dir() -> Option<PathBuf> {
     let from_env = env::var("FILMCRAFT_WEB_UI_DIR").ok().map(PathBuf::from);
-    let candidate = from_env.unwrap_or_else(|| PathBuf::from("apps/filmcraft-web-ui/dist"));
+    let candidate = from_env.unwrap_or_else(|| PathBuf::from("cloud/filmcraft-web-ui/dist"));
     if candidate.is_dir() { Some(candidate) } else { None }
 }
 

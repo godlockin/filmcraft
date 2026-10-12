@@ -57,6 +57,7 @@ WORKDIR /usr/src/filmcraft
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY apps ./apps
+COPY cloud ./cloud
 COPY xtask ./xtask
 
 # Build only the server binary. This pulls in filmcraft-engine transitively,

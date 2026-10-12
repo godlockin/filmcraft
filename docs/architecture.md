@@ -20,7 +20,7 @@ Design principles:
 ## 1. Layers
 
 ```text
- L6  apps/filmcraft · apps/filmcraft-cli · apps/filmcraft-web
+ L6  apps/filmcraft · apps/filmcraft-cli · apps/filmcraft-web · cloud/filmcraft-server · cloud/filmcraft-web-ui
  L5  ui-egui · automation · platform
  L4  engine
  L3  render · gpu · export · golden (test-only)

@@ -40,7 +40,7 @@ FilmCraft 现已具备改造成 Web 服务所需的全部基础设施:`engine::S
 
 | 缺口 | 现状 | 改造方案 |
 |---|---|---|
-| HTTP/WebSocket 服务 | ❌ 仅有 TCP 控制端口 | 新增 `apps/filmcraft-server` crate(axum) |
+| HTTP/WebSocket 服务 | ❌ 仅有 TCP 控制端口 | 新增 `cloud/filmcraft-server` crate(axum) |
 | 对象存储抽象 | ❌ 默认 `FsServices` 直接 `std::fs` | 实现 `OssServices` 套 `engine::Services` |
 | 多用户隔离 | ❌ 桌面单用户 | `SessionManager` 按 `user_id` 分实例 |
 | 工程版本/协作 | ❌ 桌面单文件 | `.fcproj` 写 OSS,加版本号和 lock 机制 |
@@ -164,7 +164,7 @@ pub struct ControlRequest {
 
 ### 3.1 总体架构
 
-> **路由归属(M1.7+)**:`/` 由 React SPA(`apps/filmcraft-web-ui/dist/index.html`)的 fallback 接管;API doc 本身在 `GET /api/v1`,所有 API 端点都在 `/api/v1/*` 命名空间下,**没有** 任何裸 `/health` 之类的路径(老 M1.3 `/health` 已下架)。健康探针用 `GET /api/v1/health`(同时也是 docker HEALTHCHECK 的目标)。
+> **路由归属(M1.7+)**:`/` 由 React SPA(`cloud/filmcraft-web-ui/dist/index.html`)的 fallback 接管;API doc 本身在 `GET /api/v1`,所有 API 端点都在 `/api/v1/*` 命名空间下,**没有** 任何裸 `/health` 之类的路径(老 M1.3 `/health` 已下架)。健康探针用 `GET /api/v1/health`(同时也是 docker HEALTHCHECK 的目标)。
 
 ```
                        ┌──────────────────────┐
@@ -227,10 +227,10 @@ pub struct ControlRequest {
 
 ### 3.3 关键模块设计
 
-#### 3.3.1 `apps/filmcraft-server` crate
+#### 3.3.1 `cloud/filmcraft-server` crate
 
 ```
-apps/filmcraft-server/
+cloud/filmcraft-server/
 ├── Cargo.toml
 ├── src/
 │   ├── main.rs                 # tokio 启动入口
@@ -550,7 +550,7 @@ oss://filmcraft-{env}/                                # bucket
 | # | 任务 | 工时 | 依赖 | 验证标准 |
 |---|---|---|---|---|
 | M1.1 | 部署形态决策(SAE 主 + FC workers) | 0.5d | — | 决策文档 |
-| M1.2 | 新建 `apps/filmcraft-server` crate | 1d | M1.1 | workspace 编译通过,`cargo run -p filmcraft-server` 启动并监听 :8080(Docker 下主机端口映射为 9081) |
+| M1.2 | 新建 `cloud/filmcraft-server` crate | 1d | M1.1 | workspace 编译通过,`cargo run -p filmcraft-server` 启动并监听 :8080(Docker 下主机端口映射为 9081) |
 | M1.3 | `OssServices` 实现 `engine::Services` | 3d | M1.2 | 单元测试:写一个临时文件到 OSS,通过 `Session::execute("media.import")` 能识别 |
 | M1.4 | `SessionManager` 多用户隔离 | 2d | M1.3 | 单元测试:两个用户并发,Session 互不污染;锁外 clone Arc,锁内 execute |
 | M1.5 | WebSocket 桥接控制协议 | 3d | M1.4 | 集成测试:WS 发 `engine.execute("engine.commands")`,收到命令列表;`filmcraft-cli --bridge ws://...` 能连 |
@@ -567,14 +567,14 @@ oss://filmcraft-{env}/                                # bucket
 
 | 文件 | 改动 |
 |---|---|
-| `Cargo.toml` (workspace) | 加 `apps/filmcraft-server` 到 members |
-| `apps/filmcraft-server/Cargo.toml` (新) | 依赖: filmcraft-engine, filmcraft-ui-egui, axum, tokio, tower-http, opendal, tracing |
+| `Cargo.toml` (workspace) | 加 `cloud/filmcraft-server` 到 members |
+| `cloud/filmcraft-server/Cargo.toml` (新) | 依赖: filmcraft-engine, filmcraft-ui-egui, axum, tokio, tower-http, opendal, tracing |
 | `crates/engine/src/lib.rs` | **不改** |
 | `crates/ui-egui/src/control.rs` | **不改** (用 `ControlRequest` 结构) |
 | `apps/filmcraft/src/control_server.rs` | **不改** (作为参考) |
-| `apps/filmcraft-server/src/services.rs` (新) | `OssServices` 实现 `engine::Services` |
+| `cloud/filmcraft-server/src/services.rs` (新) | `OssServices` 实现 `engine::Services` |
 
-**核心承诺**: 不改 engine 任何代码,所有改动在 `apps/filmcraft-server/` 内。
+**核心承诺**: 不改 engine 任何代码,所有改动在 `cloud/filmcraft-server/` 内。
 
 ### 5.4 风险与缓解
 

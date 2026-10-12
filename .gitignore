@@ -9,10 +9,10 @@ plan/
 .env
 # docker build artefacts local to the host
 docker-compose.override.yml
-# filmcraft-web-ui: build output and npm install footprint (M1.7)
-apps/filmcraft-web-ui/dist/
-apps/filmcraft-web-ui/node_modules/
-apps/filmcraft-web-ui/package-lock.json
-apps/filmcraft-web-ui/tsconfig.tsbuildinfo
+# filmcraft-web-ui: build output and npm install footprint (M1.7, relocated under cloud/ in M2.4)
+cloud/filmcraft-web-ui/dist/
+cloud/filmcraft-web-ui/node_modules/
+cloud/filmcraft-web-ui/package-lock.json
+cloud/filmcraft-web-ui/tsconfig.tsbuildinfo
 # runtime OSS store produced by filmcraft-server (never commit media/project files)
 /data/
