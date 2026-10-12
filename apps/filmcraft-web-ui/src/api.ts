@@ -1,5 +1,5 @@
 /**
- * Thin fetch / XHR wrapper for the FilmCraft headless server (M1.7).
+ * Thin fetch / XHR wrapper for the FilmCraft headless server (M2.2).
  *
  * The browser app talks directly to `filmcraft-server` on the same origin
  * in production, and through Vite's `/api/*` proxy in dev. Either way,
@@ -7,6 +7,11 @@
  *
  * Uploads use `XMLHttpRequest` rather than `fetch` so we can stream the
  * body and report progress with `xhr.upload.onprogress`.
+ *
+ * M2.2 addition: `fetchFcproj` reads the project's raw `.fcproj` bytes
+ * via the new `/api/v1/projects/{id}/fcproj` endpoint (no
+ * `Content-Disposition: attachment` so a future store can
+ * `JSON.parse` the body).
  */
 
 import type {
@@ -123,4 +128,61 @@ export function uploadMedia(
 
 export async function getExportInfo(projectId: string): Promise<ExportInfoResponse> {
   return jsonRequest("GET", `/projects/${encodeURIComponent(projectId)}/export`);
+}
+
+/**
+ * Read the raw `.fcproj` bytes for a project via the M2.2 raw endpoint
+ * (`GET /api/v1/projects/{id}/fcproj`). Returns the response body as a
+ * `Uint8Array` and the server-reported content-type so callers can
+ * distinguish a successful octet-stream response from a JSON error body.
+ *
+ * Distinguishes two failure modes so the UI can show a useful message:
+ *   - 404: project has no saved `.fcproj` yet → `{ ok: false, status: 404, kind: "no-save" }`.
+ *   - other HTTP error: `{ ok: false, status, kind: "http", error }`.
+ *   - network failure: rejected with the underlying `Error`.
+ */
+export interface FetchFcprojResult {
+  ok: boolean;
+  status: number;
+  contentType: string | null;
+  bytes: Uint8Array;
+  /** Set when `ok === false`. */
+  error?: string;
+  /** Set when `ok === false && status === 404` — distinguishes "no save yet" from other failures. */
+  kind?: "no-save" | "http";
+}
+
+export async function fetchFcproj(projectId: string): Promise<FetchFcprojResult> {
+  const url = `${prefix}/projects/${encodeURIComponent(projectId)}/fcproj`;
+  const resp = await fetch(url);
+  const contentType = resp.headers.get("content-type");
+  const buf = new Uint8Array(await resp.arrayBuffer());
+  if (resp.ok) {
+    return { ok: true, status: resp.status, contentType, bytes: buf };
+  }
+  if (resp.status === 404) {
+    return {
+      ok: false,
+      status: 404,
+      contentType,
+      bytes: buf,
+      kind: "no-save",
+      error: "project has no saved fcproj yet",
+    };
+  }
+  let detail = "";
+  try {
+    const data = JSON.parse(new TextDecoder().decode(buf)) as { error?: string };
+    if (data?.error) detail = `: ${data.error}`;
+  } catch {
+    /* body wasn't JSON — keep the status-only detail */
+  }
+  return {
+    ok: false,
+    status: resp.status,
+    contentType,
+    bytes: buf,
+    kind: "http",
+    error: `${resp.status}${detail}`,
+  };
 }

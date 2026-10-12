@@ -12,3 +12,7 @@ docker-compose.override.yml
 # filmcraft-web-ui: build output and npm install footprint (M1.7)
 apps/filmcraft-web-ui/dist/
 apps/filmcraft-web-ui/node_modules/
+apps/filmcraft-web-ui/package-lock.json
+apps/filmcraft-web-ui/tsconfig.tsbuildinfo
+# runtime OSS store produced by filmcraft-server (never commit media/project files)
+/data/

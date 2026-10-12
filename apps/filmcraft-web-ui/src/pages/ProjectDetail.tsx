@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import EngineConsole from "../components/EngineConsole";
 import MediaItem from "../components/MediaItem";
 import UploadForm from "../components/UploadForm";
 import { getExportInfo, listMedia, streamUrl } from "../api";
@@ -104,6 +105,8 @@ export default function ProjectDetail() {
       <div style={{ marginTop: "1.5rem" }}>
         <button onClick={handleExport}>Export</button>
       </div>
+
+      <EngineConsole projectId={projectId} />
     </div>
   );
 }
