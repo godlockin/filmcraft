@@ -17,9 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
-    let skip = env::var("FILMCRAFT_WEB_UI_SKIP_BUILD")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
+    let skip = env::var("FILMCRAFT_WEB_UI_SKIP_BUILD").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false);
     if skip {
         eprintln!("filmcraft-web-ui: FILMCRAFT_WEB_UI_SKIP_BUILD=1, skipping npm build");
         // Still emit a build step so rebuilds after editing build.rs
@@ -32,7 +30,9 @@ fn main() {
     if !npm {
         // npm not available; do not fail the build. The server will fall
         // back to its "web UI not built" JSON 404.
-        eprintln!("filmcraft-web-ui: npm not found, skipping frontend build; build the JS bundle manually with `cd apps/filmcraft-web-ui && npm install && npm run build`");
+        eprintln!(
+            "filmcraft-web-ui: npm not found, skipping frontend build; build the JS bundle manually with `cd apps/filmcraft-web-ui && npm install && npm run build`"
+        );
         return;
     }
 
