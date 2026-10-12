@@ -1,5 +1,5 @@
 /*
- * FilmCraft web UI — single CSS file (M1.7). No Tailwind, no design
+ * FilmCraft web UI — single CSS file (M2.2). No Tailwind, no design
  * system; the layout below is intentionally plain so the milestone's
  * "minimal but working" goal stays in scope.
  */
@@ -213,4 +213,148 @@ input[type="file"] {
   border-radius: 4px;
   padding: 0.5rem 0.75rem;
   margin: 0.5rem 0;
+}
+
+/* ---------- engine console (M2.2) ---------- */
+
+.engine-console {
+  margin-top: 2rem;
+  padding: 1rem;
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+}
+
+.engine-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+}
+
+.engine-header h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.conn-badge {
+  font-size: 0.8rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  background: #e5e7eb;
+  color: #1f2937;
+  font-weight: 500;
+}
+
+.conn-idle {
+  background: #e5e7eb;
+  color: #374151;
+}
+.conn-connecting {
+  background: #fef3c7;
+  color: #92400e;
+}
+.conn-open {
+  background: #dcfce7;
+  color: #166534;
+}
+.conn-closed {
+  background: #e5e7eb;
+  color: #6b7280;
+}
+.conn-fatal {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.engine-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.engine-result {
+  margin-top: 0.75rem;
+  border-top: 1px solid #f3f4f6;
+  padding-top: 0.75rem;
+}
+
+.engine-result summary {
+  cursor: pointer;
+  font-size: 0.9rem;
+  color: #374151;
+}
+
+.engine-result pre {
+  background: #0f172a;
+  color: #e2e8f0;
+  border-radius: 4px;
+  padding: 0.6rem;
+  font-size: 0.8rem;
+  overflow-x: auto;
+  max-height: 320px;
+}
+
+.engine-result pre.hex {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+
+.engine-result pre.text-preview {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.prefs-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid #f3f4f6;
+}
+
+.prefs-row h4 {
+  width: 100%;
+  margin: 0 0 0.25rem;
+  font-size: 0.9rem;
+}
+
+.prefs-row input[type="text"] {
+  flex: 1 1 140px;
+  min-width: 100px;
+}
+
+.command-list {
+  margin: 0.5rem 0 0 0;
+  padding-left: 1.5rem;
+  font-size: 0.85rem;
+  color: #1f2937;
+}
+
+.command-list li {
+  margin: 0.15rem 0;
+}
+
+.command-list code {
+  background: #f3f4f6;
+  padding: 0 0.3rem;
+  border-radius: 3px;
+}
+
+.engine-footer {
+  margin-top: 0.75rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid #f3f4f6;
+  font-size: 0.75rem;
+  color: #6b7280;
+}
+
+.hint {
+  font-size: 0.8rem;
+  color: #6b7280;
+  margin: 0.25rem 0;
 }
