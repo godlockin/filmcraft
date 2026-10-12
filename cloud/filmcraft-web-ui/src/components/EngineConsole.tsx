@@ -1,5 +1,5 @@
 /**
- * `EngineConsole` (M2.2).
+ * `EngineConsole` (M2.2 + M2.8).
  *
  * Per-project panel that exercises the WS bridge end-to-end:
  *
@@ -13,6 +13,11 @@
  *     renders the first 64 bytes as hex + text so the user can
  *     confirm the bytes come back without `Content-Disposition`.
  *
+ *   - M2.8: hosts the `CommandPalette` (filterable, fuzzy-by-prefix,
+ *     capped to 12 visible rows) and a "Recent" row of clickable
+ *     chips that runs the same engine commands; both flow into
+ *     `runCommand` so they get recorded in the MRU list.
+ *
  * The component is intentionally minimal — the M2.2 deliverable is
  * "all M2.1 backend features are demonstrably usable from a browser",
  * not "ship a Premiere-class editor". M2.3+ adds the timeline.
@@ -20,6 +25,8 @@
 
 import { useEffect, useState } from "react";
 import { useEngineStore } from "../store";
+import CommandPalette from "./CommandPalette";
+import { clearRecent } from "../lib/history";
 
 function stateLabel(state: ReturnType<typeof useEngineStore.getState>["connectionState"]): string {
   switch (state) {
@@ -49,6 +56,7 @@ export default function EngineConsole({ projectId }: { projectId: string }) {
   const prefs = useEngineStore((s) => s.prefs);
   const commands = useEngineStore((s) => s.commands);
   const rawFcproj = useEngineStore((s) => s.rawFcproj);
+  const recentCommands = useEngineStore((s) => s.recentCommands);
 
   const connect = useEngineStore((s) => s.connect);
   const disconnect = useEngineStore((s) => s.disconnect);
@@ -58,6 +66,18 @@ export default function EngineConsole({ projectId }: { projectId: string }) {
   const saveProject = useEngineStore((s) => s.saveProject);
   const listCommands = useEngineStore((s) => s.listCommands);
   const fetchRawFcproj = useEngineStore((s) => s.fetchRawFcproj);
+  const runCommand = useEngineStore((s) => s.runCommand);
+  const reloadRecentCommands = useEngineStore((s) => s.reloadRecentCommands);
+  // Local handle: clicking a recent chip runs the command and quietly
+  // swallows the returned value. The store records `lastOkAt` /
+  // `lastError` so the footer + error banners update.
+  const handleRun = (id: string): void => {
+    void runCommand(id);
+  };
+  const handleClearRecent = (): void => {
+    clearRecent();
+    reloadRecentCommands();
+  };
 
   // Local form state for the prefs round-trip — the engine prefs map
   // is generic, so the user picks a key + a string value.
@@ -169,6 +189,37 @@ export default function EngineConsole({ projectId }: { projectId: string }) {
             {commands.length > 50 && <li>… ({commands.length - 50} more)</li>}
           </ul>
         </details>
+      )}
+
+      <CommandPalette
+        commands={commands ?? []}
+        disabled={connectionState !== "open"}
+        onRun={handleRun}
+      />
+
+      {recentCommands.length > 0 && (
+        <div className="recent-row">
+          <h4>
+            Recent
+            <button
+              type="button"
+              className="recent-clear"
+              onClick={handleClearRecent}
+              aria-label="clear recent commands"
+            >
+              clear
+            </button>
+          </h4>
+          <ul className="recent-list" aria-label="recent commands">
+            {recentCommands.map((id) => (
+              <li key={id}>
+                <button type="button" onClick={() => handleRun(id)} disabled={connectionState !== "open"}>
+                  <code>{id}</code>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
 
       {rawFcproj !== null && (

@@ -24,6 +24,7 @@
 import { create } from "zustand";
 import { WsClient, wsUrl } from "./ws";
 import { fetchFcproj } from "./api";
+import { loadRecent, pushRecent } from "./lib/history";
 import type { ConnectionState, CommandInfo } from "./types";
 
 /** Result of an engine command (typed loosely on purpose; the server is schemaless). */
@@ -66,8 +67,10 @@ export interface EngineState {
   prefs: Record<string, unknown>;
   /** Result of the last `engine.commands` call. */
   commands: CommandInfo[] | null;
-  /** Result of the last `fetchFcproj` call. `null` until the user triggers one. */
+  /** Result of the last `fetchRawFcproj` call. `null` until the user triggers one. */
   rawFcproj: RawFcproj;
+  /** Most-recently-used command ids (MRU first), persisted across reloads. */
+  recentCommands: string[];
 
   // ----- actions -----
   connect: (projectId: string) => Promise<void>;
@@ -79,6 +82,15 @@ export interface EngineState {
   listCommands: () => Promise<void>;
   fetchRawFcproj: () => Promise<void>;
   clearRawFcproj: () => void;
+  /**
+   * Generic command invocation used by the M2.8 command palette.
+   * Runs `command` with no params; pushes the id onto the recent-history
+   * list (localStorage) only on success so the MRU reflects commands
+   * that actually worked.
+   */
+  runCommand: (command: string) => Promise<EngineResult>;
+  /** Force-refresh the recent list (e.g. after the user clears it). */
+  reloadRecentCommands: () => void;
 }
 
 /** Internal helper that gets / sets `client` outside React render. */
@@ -95,6 +107,11 @@ export const useEngineStore = create<EngineState>((set, get) => ({
   prefs: {},
   commands: null,
   rawFcproj: null,
+  // Bootstrap the MRU list from localStorage at store creation. The lib
+  // helper gracefully returns `[]` when localStorage is unavailable (SSR,
+  // unit tests, denied-storage browsers), so this is safe to call
+  // unconditionally.
+  recentCommands: loadRecent(),
 
   async connect(projectId: string): Promise<void> {
     if (get().activeProject === projectId && get().connectionState === "open") {
@@ -241,6 +258,42 @@ export const useEngineStore = create<EngineState>((set, get) => ({
 
   clearRawFcproj(): void {
     set({ rawFcproj: null });
+  },
+
+  async runCommand(command: string): Promise<EngineResult> {
+    // No-op when the WS isn't ready — the palette disables its buttons
+    // while the connection is closed, but a programmatic caller might
+    // still slip through. Guard at the boundary instead of trusting the UI.
+    if (client === null) {
+      const err = new Error("WebSocket not connected");
+      set({ lastError: err.message });
+      throw err;
+    }
+    if (typeof command !== "string" || command.length === 0) {
+      const err = new Error("command id is empty");
+      set({ lastError: err.message });
+      throw err;
+    }
+    try {
+      const result = await client.call("engine.execute", {
+        command,
+        params: {},
+      });
+      pushRecent(command);
+      set({
+        recentCommands: loadRecent(),
+        lastOkAt: Date.now(),
+        lastError: null,
+      });
+      return result;
+    } catch (e) {
+      set({ lastError: e instanceof Error ? e.message : String(e) });
+      throw e;
+    }
+  },
+
+  reloadRecentCommands(): void {
+    set({ recentCommands: loadRecent() });
   },
 }));
 

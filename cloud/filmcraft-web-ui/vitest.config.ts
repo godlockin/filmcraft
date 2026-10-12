@@ -10,7 +10,12 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     environment: "happy-dom",
-    include: ["src/**/*.test.ts"],
+    // Component tests (M2.8+) need the `.test.tsx` suffix; the M2.2
+    // pure-logic tests use `.test.ts`.
+    include: ["src/**/*.test.{ts,tsx}"],
+    // Tell react-dom/client that we're inside React's `act()`, so
+    // component tests don't get spammed with the "act warning" lines.
+    setupFiles: ["./vitest.setup.ts"],
     // Short per-test timeout: pending-call cleanup is verified by
     // the disconnect / close tests. Anything past 5s is a bug.
     testTimeout: 5000,

@@ -358,3 +358,110 @@ input[type="file"] {
   color: #6b7280;
   margin: 0.25rem 0;
 }
+
+/* M2.8 command palette */
+.command-palette {
+  margin: 0.5rem 0 0.75rem 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.command-palette .palette-input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.command-palette .palette-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.15rem;
+}
+
+.command-palette .palette-list button {
+  text-align: left;
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 3px;
+  padding: 0.3rem 0.5rem;
+  cursor: pointer;
+}
+
+.command-palette .palette-list button:hover:not(:disabled) {
+  background: #f3f4f6;
+}
+
+.command-palette .palette-list button:disabled {
+  color: #9ca3af;
+  cursor: not-allowed;
+}
+
+.command-palette .palette-label {
+  color: #6b7280;
+}
+
+/* M2.8 recent chips */
+.recent-row {
+  margin: 0.5rem 0;
+}
+
+.recent-row h4 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0.25rem 0;
+  font-size: 0.9rem;
+}
+
+.recent-clear {
+  background: transparent;
+  border: none;
+  color: #6b7280;
+  font-size: 0.75rem;
+  cursor: pointer;
+  padding: 0 0.25rem;
+}
+
+.recent-clear:hover {
+  color: #111827;
+  text-decoration: underline;
+}
+
+.recent-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.recent-list button {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+  background: #f3f4f6;
+  border: 1px solid #e5e7eb;
+  border-radius: 999px;
+  padding: 0.2rem 0.6rem;
+  cursor: pointer;
+}
+
+.recent-list button:hover:not(:disabled) {
+  background: #e5e7eb;
+}
+
+.recent-list button:disabled {
+  color: #9ca3af;
+  cursor: not-allowed;
+}
