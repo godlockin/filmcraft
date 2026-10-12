@@ -164,6 +164,8 @@ pub struct ControlRequest {
 
 ### 3.1 总体架构
 
+> **路由归属(M1.7+)**:`/` 由 React SPA(`apps/filmcraft-web-ui/dist/index.html`)的 fallback 接管;API doc 本身在 `GET /api/v1`,所有 API 端点都在 `/api/v1/*` 命名空间下,**没有** 任何裸 `/health` 之类的路径(老 M1.3 `/health` 已下架)。健康探针用 `GET /api/v1/health`(同时也是 docker HEALTHCHECK 的目标)。
+
 ```
                        ┌──────────────────────┐
                        │    浏览器 Web UI     │
@@ -548,7 +550,7 @@ oss://filmcraft-{env}/                                # bucket
 | # | 任务 | 工时 | 依赖 | 验证标准 |
 |---|---|---|---|---|
 | M1.1 | 部署形态决策(SAE 主 + FC workers) | 0.5d | — | 决策文档 |
-| M1.2 | 新建 `apps/filmcraft-server` crate | 1d | M1.1 | workspace 编译通过,`cargo run -p filmcraft-server` 启动并监听 :8080 |
+| M1.2 | 新建 `apps/filmcraft-server` crate | 1d | M1.1 | workspace 编译通过,`cargo run -p filmcraft-server` 启动并监听 :8080(Docker 下主机端口映射为 9081) |
 | M1.3 | `OssServices` 实现 `engine::Services` | 3d | M1.2 | 单元测试:写一个临时文件到 OSS,通过 `Session::execute("media.import")` 能识别 |
 | M1.4 | `SessionManager` 多用户隔离 | 2d | M1.3 | 单元测试:两个用户并发,Session 互不污染;锁外 clone Arc,锁内 execute |
 | M1.5 | WebSocket 桥接控制协议 | 3d | M1.4 | 集成测试:WS 发 `engine.execute("engine.commands")`,收到命令列表;`filmcraft-cli --bridge ws://...` 能连 |
