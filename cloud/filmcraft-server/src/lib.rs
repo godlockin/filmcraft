@@ -8,10 +8,12 @@ pub mod api;
 pub mod error;
 pub mod services;
 pub mod session;
+pub mod telemetry;
 pub mod versioning;
 pub mod ws;
 
 pub use error::{Result, ServerError, map_store_io_error};
 pub use services::OssServices;
 pub use session::{ProjectKey, SessionHandle, SessionManager, UserId};
+pub use telemetry::{HEADER_REQUEST_ID, JsonlSink, JsonlSinkConfig, RequestContext, RequestId, context_for, request_id_layer, with_request_id};
 pub use versioning::{HistoryEntry, ProjectMeta, SaveOutcome, Versioner};

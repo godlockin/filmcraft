@@ -37,6 +37,7 @@ use tracing::warn;
 
 use crate::api::current_project_path;
 use crate::session::{ProjectKey, SessionManager};
+use crate::telemetry::{RequestId, with_request_id};
 
 /// Longest accepted request line (bytes, without the newline). Mirrors the
 /// desktop server so a malformed client gets the same behaviour on either
@@ -62,8 +63,19 @@ pub const MAX_CONNECTIONS: usize = 16;
 /// …) we send one error reply and close the socket — every other command on
 /// this socket would have failed anyway because the engine session is empty,
 /// and we want the client to see *why* the load failed.
+///
+/// Telemetry (M2.10): the HTTP request id is lost on the WS upgrade, so
+/// the bridge generates a fresh `RequestId` and pins it to the task-local
+/// for the entire lifetime of the socket. Every `tracing` event emitted
+/// by `handle_socket` (or by the engine behind it) carries that id in its
+/// JSONL record via `current_request_id()`.
 pub async fn handle_socket(socket: WebSocket, mgr: Arc<SessionManager>, key: ProjectKey) {
-    let mut socket = socket;
+    let session_id = RequestId::new();
+    let key_for_session = key.clone();
+    with_request_id(session_id, handle_socket_inner(socket, mgr, key_for_session)).await;
+}
+
+async fn handle_socket_inner(mut socket: WebSocket, mgr: Arc<SessionManager>, key: ProjectKey) {
     let ProjectKey(user_id, project_id) = key.clone();
 
     // Auto-load the project's current `.fcproj` so `sequence.inspect` and

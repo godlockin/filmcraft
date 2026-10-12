@@ -63,6 +63,7 @@ log = "0.4"
 rayon = "1"
 proptest = "1"
 roxmltree = "0.21"
+uuid = { version = "1", features = ["v4"] }
 
 # ui
 egui = "0.36"

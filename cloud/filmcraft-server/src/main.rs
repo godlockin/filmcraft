@@ -15,6 +15,12 @@
 //!   - `GET  /api/v1/projects/{project_id}/export` — export metadata
 //!   - `GET  /api/v1/projects/{project_id}/export.fcproj` — current project
 //!
+//! M2.10 adds telemetry: an HTTP `X-Request-Id` middleware (the id is also
+//! stamped on the response), and a `tracing`-compatible JSONL sink so
+//! per-request events are written to a rotated file for ops. WebSocket
+//! sessions get their own request id pinned to the task-local for the
+//! whole socket lifetime.
+//!
 //! Rules (AGENTS.md §0):
 //!   - No `unwrap`/`expect`/`panic!`/`todo!`/`unsafe` outside tests.
 //!   - Bind to 127.0.0.1 by default; env override is parsed, not trusted.
@@ -32,6 +38,7 @@ use axum::extract::DefaultBodyLimit;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::http::header::CONTENT_TYPE;
+use axum::middleware::from_fn;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{MethodRouter, delete, get, post};
 use filmcraft_engine::Services;
@@ -44,7 +51,7 @@ use tower_http::trace::TraceLayer;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
-use filmcraft_server::{OssServices, ProjectKey, Result, ServerError, UserId, map_store_io_error};
+use filmcraft_server::{OssServices, ProjectKey, Result, ServerError, UserId, map_store_io_error, request_id_layer};
 
 /// Placeholder user identity used by every handler until M2 wires real
 /// authentication. Centralised here so the M2 change touches one line.
@@ -217,6 +224,15 @@ async fn try_main() -> Result<()> {
         .fallback_service(fallback)
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
         .layer(TraceLayer::new_for_http())
+        // M2.10: telemetry — extract / generate a request id, install it
+        // in `Request::extensions()`, and stamp `X-Request-Id` on the
+        // outgoing response. Outer-most so every other layer / handler
+        // sees the id (the layer order in axum is "last added is
+        // outermost", so this must come after CORS / Trace to be
+        // innermost; we want it innermost anyway — request_id_layer does
+        // not produce an event of its own, so the TraceLayer HTTP access
+        // log is the natural place to see the id).
+        .layer(from_fn(request_id_layer))
         .with_state(state);
 
     let listener = TcpListener::bind(&listen_addr).await.map_err(|e| ServerError::Internal(format!("failed to bind {listen_addr}: {e}")))?;
@@ -476,6 +492,7 @@ mod tests {
             .route("/api/v1/projects/{project_id}/history", get(filmcraft_server::api::versioning::list_history))
             .route("/api/v1/projects/{project_id}/history/{rev}", get(filmcraft_server::api::versioning::read_history))
             .layer(TraceLayer::new_for_http())
+            .layer(from_fn(request_id_layer))
             .with_state(state)
     }
 
