@@ -10,7 +10,7 @@
 #                   wget (the latter is used by the HEALTHCHECK).
 #
 # Build:    docker build -t filmcraft-server:dev .
-# Run:      docker run --rm -p 127.0.0.1:8080:8080 --env-file .env filmcraft-server:dev
+# Run:      docker run --rm -p 127.0.0.1:9081:8080 --env-file .env filmcraft-server:dev
 # Compose:  docker compose up --build
 #
 # RUST_VERSION note: the workspace requires rust-version = "1.95" (MSRV). If
@@ -104,4 +104,4 @@ CMD ["/usr/local/bin/filmcraft-server"]
 # `start_period: 20s` gives the hello-world binary time to bind; M1.3+ will
 # need to raise this to 60-90s once the engine is wired up.
 HEALTHCHECK --interval=15s --timeout=3s --start-period=20s --retries=3 \
-    CMD ["/usr/bin/wget", "--quiet", "--spider", "http://127.0.0.1:8080/health"]
+    CMD ["/usr/bin/wget", "--quiet", "--spider", "http://127.0.0.1:8080/api/v1/health"]

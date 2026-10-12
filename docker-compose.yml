@@ -14,15 +14,21 @@ services:
     restart: unless-stopped
     # Loopback only (AGENTS.md §0: never expose to the public internet by
     # default). To reach from another host, change the host side of the bind
-    # explicitly, e.g. "0.0.0.0:8080:8080".
+    # explicitly, e.g. "0.0.0.0:9081:8080".
+    #
+    # Host port 9081 (between `facefusion` on 9080 and the next planned
+    # service at 9082) matches the convention used by the sibling
+    # lockin dockers; the container port stays 8080 because that's what
+    # the binary's `FILMCRAFT_LISTEN_ADDR` defaults to and what every
+    # healthcheck / runtime probe inside the container expects.
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:9081:8080"
     env_file:
       - .env
     environment:
       # Hard-code 0.0.0.0 here. We deliberately ignore any FILMCRAFT_LISTEN_ADDR
       # in .env (which is meant for `cargo run` on the host) so the published
-      # container port is reachable. The host-side `127.0.0.1:8080:8080` is
+      # container port is reachable. The host-side `127.0.0.1:9081:8080` is
       # the boundary that keeps this off the public internet.
       FILMCRAFT_LISTEN_ADDR: "0.0.0.0:8080"
       RUST_LOG: ${RUST_LOG:-filmcraft_server=info,tower_http=info}
@@ -33,7 +39,7 @@ services:
         limits:
           memory: 4G
     healthcheck:
-      test: ["CMD", "/usr/bin/wget", "--quiet", "--spider", "http://127.0.0.1:8080/health"]
+      test: ["CMD", "/usr/bin/wget", "--quiet", "--spider", "http://127.0.0.1:8080/api/v1/health"]
       interval: 15s
       timeout: 3s
       start_period: 20s
@@ -54,18 +60,18 @@ services:
     container_name: filmcraft-server-dev
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:9081:8080"
     env_file:
       - .env
     environment:
       # Hard-code 0.0.0.0 here. We deliberately ignore FILMCRAFT_LISTEN_ADDR
       # in .env (which is meant for `cargo run` on the host) so the published
-      # container port is reachable. The host-side `127.0.0.1:8080:8080` is
+      # container port is reachable. The host-side `127.0.0.1:9081:8080` is
       # the boundary that keeps this off the public internet.
       FILMCRAFT_LISTEN_ADDR: "0.0.0.0:8080"
       RUST_LOG: ${RUST_LOG:-filmcraft_server=info,tower_http=info}
     healthcheck:
-      test: ["CMD", "/usr/bin/wget", "--quiet", "--spider", "http://127.0.0.1:8080/health"]
+      test: ["CMD", "/usr/bin/wget", "--quiet", "--spider", "http://127.0.0.1:8080/api/v1/health"]
       interval: 15s
       timeout: 3s
       start_period: 10s
