@@ -1,0 +1,109 @@
+.lumetri-root {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  height: 100%;
+  overflow: auto;
+}
+
+.lumetri-empty {
+  color: var(--text-faint);
+  padding: 12px;
+  text-align: center;
+  font-size: var(--small-size);
+}
+
+.lumetri-presets {
+  display: grid;
+  grid-template-columns: 60px 1fr;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+}
+
+.lumetri-presets-label {
+  color: var(--text-dim);
+  font-size: var(--small-size);
+}
+
+.lumetri-presets-select {
+  background: var(--field-bg);
+  color: var(--text);
+  border: 1px solid var(--field-border);
+  border-radius: var(--radius-sm);
+  padding: 2px 4px;
+  font-size: var(--small-size);
+}
+
+.lumetri-sections {
+  list-style: none;
+  margin: 0;
+  padding: 0 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.lumetri-section-toggle {
+  margin: 0;
+}
+
+.lumetri-section-btn {
+  background: var(--field-bg);
+  border: 1px solid var(--field-border);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  padding: 2px 6px;
+  font-size: var(--small-size);
+  cursor: pointer;
+}
+.lumetri-section-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.lumetri-basic {
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-sm);
+  margin: 0 6px;
+  padding: 4px 6px 6px;
+}
+
+.lumetri-basic-title {
+  color: var(--text-dim);
+  font-size: var(--small-size);
+  padding: 0 4px;
+}
+
+.lumetri-basic-params {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.lumetri-basic-param {
+  display: grid;
+  grid-template-columns: 70px 1fr 40px;
+  align-items: center;
+  gap: 4px;
+}
+
+.lumetri-basic-label {
+  color: var(--text);
+  font-size: var(--small-size);
+}
+
+.lumetri-basic-slider {
+  accent-color: var(--accent);
+  width: 100%;
+}
+
+.lumetri-basic-value {
+  color: var(--text-faint);
+  font-size: var(--small-size);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}

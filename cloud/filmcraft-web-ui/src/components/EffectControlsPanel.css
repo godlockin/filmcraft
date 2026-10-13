@@ -1,0 +1,68 @@
+.effect-controls-empty {
+  color: var(--text-faint);
+  padding: 12px;
+  text-align: center;
+  font-size: var(--small-size);
+}
+
+.effect-controls-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  height: 100%;
+}
+
+.effect-controls-section {
+  border-top: 1px solid var(--separator);
+  padding: 4px 6px;
+}
+.effect-controls-section:first-child {
+  border-top: none;
+}
+.effect-controls-section.is-disabled {
+  opacity: 0.5;
+}
+
+.effect-controls-section-title {
+  font-size: var(--body-size);
+  color: var(--text);
+  padding: 4px 0;
+  font-weight: 500;
+}
+
+.effect-controls-params {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 8px;
+}
+
+.effect-controls-param {
+  display: grid;
+  grid-template-columns: 1fr 80px;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0;
+}
+
+.effect-controls-param-name {
+  color: var(--text-dim);
+  font-size: var(--small-size);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.effect-controls-param-input {
+  background: var(--field-bg);
+  color: var(--text);
+  border: 1px solid var(--field-border);
+  border-radius: var(--radius-sm);
+  padding: 2px 4px;
+  font-size: var(--small-size);
+  font-family: inherit;
+  width: 100%;
+}
+.effect-controls-param-input:focus {
+  outline: 1px solid var(--focus);
+}

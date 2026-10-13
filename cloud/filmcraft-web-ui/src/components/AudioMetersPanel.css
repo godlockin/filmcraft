@@ -1,0 +1,78 @@
+.audio-meters-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  gap: 4px;
+  padding: 6px;
+}
+
+.audio-meters-bars {
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+  align-items: stretch;
+  height: 140px;
+}
+
+.audio-meter-channel {
+  display: grid;
+  grid-template-columns: auto 24px;
+  grid-template-rows: 1fr auto;
+  align-items: end;
+  width: 60px;
+}
+
+.audio-meter-scale {
+  display: flex;
+  flex-direction: column-reverse;
+  justify-content: space-between;
+  font-size: 9px;
+  color: var(--text-faint);
+  text-align: right;
+  padding-right: 2px;
+  height: 100%;
+}
+
+.audio-meter-tick {
+  line-height: 1;
+}
+
+.audio-meter-bar {
+  background: var(--field-bg);
+  border: 1px solid var(--field-border);
+  border-radius: var(--radius-sm);
+  width: 24px;
+  height: 100%;
+  position: relative;
+  overflow: hidden;
+}
+
+.audio-meter-fill {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: linear-gradient(
+    to top,
+    var(--render-green) 0%,
+    var(--render-green) 60%,
+    var(--render-yellow) 75%,
+    var(--render-red) 90%
+  );
+}
+
+.audio-meter-label {
+  grid-column: 1 / -1;
+  text-align: center;
+  font-size: var(--small-size);
+  color: var(--text-dim);
+  padding-top: 2px;
+}
+
+.audio-meters-note {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: var(--small-size);
+  text-align: center;
+  padding: 4px;
+}
