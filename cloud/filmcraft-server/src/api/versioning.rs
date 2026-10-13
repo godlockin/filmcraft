@@ -36,7 +36,7 @@
 
 use axum::Json;
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::Path;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
@@ -89,7 +89,7 @@ fn read_locker(headers: &HeaderMap, from_body: Option<&str>) -> Result<String> {
 }
 
 /// POST /api/v1/projects/{project_id}/lock
-pub async fn lock_project(State(api): State<ApiState>, Path(project_id): Path<String>, headers: HeaderMap, body: Option<Json<LockBody>>) -> Result<Response> {
+pub async fn lock_project(api: ApiState, Path(project_id): Path<String>, headers: HeaderMap, body: Option<Json<LockBody>>) -> Result<Response> {
     validate_component("project_id", &project_id)?;
     let body = body.map(|Json(b)| b);
     let from_body = body.as_ref().map(|b| b.locker.as_str());
@@ -107,7 +107,7 @@ pub async fn lock_project(State(api): State<ApiState>, Path(project_id): Path<St
 }
 
 /// POST /api/v1/projects/{project_id}/unlock
-pub async fn unlock_project(State(api): State<ApiState>, Path(project_id): Path<String>, headers: HeaderMap, body: Option<Json<LockBody>>) -> Result<Response> {
+pub async fn unlock_project(api: ApiState, Path(project_id): Path<String>, headers: HeaderMap, body: Option<Json<LockBody>>) -> Result<Response> {
     validate_component("project_id", &project_id)?;
     let from_body = body.as_ref().map(|b| b.locker.as_str());
     let locker = read_locker(&headers, from_body)?;
@@ -130,7 +130,7 @@ pub async fn unlock_project(State(api): State<ApiState>, Path(project_id): Path<
 /// bytes inside a `payload` base64 field. The JSON mode is for the
 /// test rig and for clients that want one round-trip without setting
 /// custom headers; the header mode is what production web-UI uses.
-pub async fn save_project(State(api): State<ApiState>, Path(project_id): Path<String>, headers: HeaderMap, body: Bytes) -> Result<Response> {
+pub async fn save_project(api: ApiState, Path(project_id): Path<String>, headers: HeaderMap, body: Bytes) -> Result<Response> {
     validate_component("project_id", &project_id)?;
 
     // Decide payload source. Headers win.
@@ -215,7 +215,7 @@ impl SavePayload {
 }
 
 /// GET /api/v1/projects/{project_id}/history
-pub async fn list_history(State(api): State<ApiState>, Path(project_id): Path<String>) -> Result<Response> {
+pub async fn list_history(api: ApiState, Path(project_id): Path<String>) -> Result<Response> {
     validate_component("project_id", &project_id)?;
     let v = versioner(&api);
     let history: Vec<HistoryEntry> = v.list_history(&api.user_id.0, &project_id).await?;
@@ -223,7 +223,7 @@ pub async fn list_history(State(api): State<ApiState>, Path(project_id): Path<St
 }
 
 /// GET /api/v1/projects/{project_id}/history/{rev}
-pub async fn read_history(State(api): State<ApiState>, Path((project_id, rev)): Path<(String, u64)>) -> Result<Response> {
+pub async fn read_history(api: ApiState, Path((project_id, rev)): Path<(String, u64)>) -> Result<Response> {
     validate_component("project_id", &project_id)?;
     let v = versioner(&api);
     let bytes = v.read_history(&api.user_id.0, &project_id, rev).await?;
@@ -237,7 +237,7 @@ pub async fn read_history(State(api): State<ApiState>, Path((project_id, rev)): 
 /// Mirrors `crate::api::get_fcproj` but reads through the `Versioner`
 /// so a future offline lock check can be added here without touching
 /// the legacy endpoint.
-pub async fn read_current(State(api): State<ApiState>, Path(project_id): Path<String>) -> Result<Response> {
+pub async fn read_current(api: ApiState, Path(project_id): Path<String>) -> Result<Response> {
     validate_component("project_id", &project_id)?;
     let v = versioner(&api);
     let bytes = v.read_current(&api.user_id.0, &project_id).await?;
@@ -282,7 +282,7 @@ mod tests {
         seed(&s, "alice", "demo");
         let api = api_state(&s);
 
-        let resp = lock_project(State(api), Path("demo".to_string()), HeaderMap::new(), Some(Json(LockBody { locker: "alice-sess".into() }))).await.unwrap();
+        let resp = lock_project(api, Path("demo".to_string()), HeaderMap::new(), Some(Json(LockBody { locker: "alice-sess".into() }))).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
         let j: Value = serde_json::from_slice(&bytes).unwrap();
@@ -297,11 +297,10 @@ mod tests {
         let api = api_state(&s);
 
         // First alice takes the lock.
-        lock_project(State(api.clone()), Path("demo".to_string()), HeaderMap::new(), Some(Json(LockBody { locker: "alice-sess".into() }))).await.unwrap();
+        lock_project(api.clone(), Path("demo".to_string()), HeaderMap::new(), Some(Json(LockBody { locker: "alice-sess".into() }))).await.unwrap();
 
         // Then bob tries to take it: must error.
-        let err =
-            lock_project(State(api.clone()), Path("demo".to_string()), HeaderMap::new(), Some(Json(LockBody { locker: "bob-sess".into() }))).await.unwrap_err();
+        let err = lock_project(api.clone(), Path("demo".to_string()), HeaderMap::new(), Some(Json(LockBody { locker: "bob-sess".into() }))).await.unwrap_err();
         match err {
             ServerError::BadRequest(m) => assert!(m.contains("locked by another"), "{m}"),
             other => panic!("expected BadRequest, got {other:?}"),
@@ -316,7 +315,7 @@ mod tests {
 
         // The project has no meta (or meta with locked_by=null) — unlock
         // is a 204 either way.
-        let resp = unlock_project(State(api), Path("demo".to_string()), HeaderMap::new(), Some(Json(LockBody { locker: "alice-sess".into() }))).await.unwrap();
+        let resp = unlock_project(api, Path("demo".to_string()), HeaderMap::new(), Some(Json(LockBody { locker: "alice-sess".into() }))).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
     }
 
@@ -327,8 +326,7 @@ mod tests {
         let api = api_state(&s);
 
         // 1. Lock.
-        let _ =
-            lock_project(State(api.clone()), Path("demo".to_string()), HeaderMap::new(), Some(Json(LockBody { locker: "alice-sess".into() }))).await.unwrap();
+        let _ = lock_project(api.clone(), Path("demo".to_string()), HeaderMap::new(), Some(Json(LockBody { locker: "alice-sess".into() }))).await.unwrap();
 
         // 2. Save via JSON envelope (raw body would set headers we can't
         // easily assert in this test rig).
@@ -344,7 +342,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(axum::http::header::CONTENT_TYPE, axum::http::HeaderValue::from_static("application/json"));
 
-        let resp = save_project(State(api.clone()), Path("demo".to_string()), headers, Bytes::from(body_bytes)).await.unwrap();
+        let resp = save_project(api.clone(), Path("demo".to_string()), headers, Bytes::from(body_bytes)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::CREATED);
         let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
         let j: Value = serde_json::from_slice(&bytes).unwrap();
@@ -359,15 +357,14 @@ mod tests {
         seed(&s, "alice", "demo");
         let api = api_state(&s);
 
-        let _ =
-            lock_project(State(api.clone()), Path("demo".to_string()), HeaderMap::new(), Some(Json(LockBody { locker: "alice-sess".into() }))).await.unwrap();
+        let _ = lock_project(api.clone(), Path("demo".to_string()), HeaderMap::new(), Some(Json(LockBody { locker: "alice-sess".into() }))).await.unwrap();
 
         let envelope = serde_json::json!({ "locker": "alice-sess", "expected_rev": 99, "payload": "x" });
         let body_bytes = serde_json::to_vec(&envelope).unwrap();
         let mut headers = HeaderMap::new();
         headers.insert(axum::http::header::CONTENT_TYPE, axum::http::HeaderValue::from_static("application/json"));
 
-        let err = save_project(State(api.clone()), Path("demo".to_string()), headers, Bytes::from(body_bytes)).await.unwrap_err();
+        let err = save_project(api.clone(), Path("demo".to_string()), headers, Bytes::from(body_bytes)).await.unwrap_err();
         match err {
             ServerError::BadRequest(m) => assert!(m.contains("rev mismatch"), "{m}"),
             other => panic!("expected BadRequest, got {other:?}"),
@@ -380,7 +377,7 @@ mod tests {
         seed(&s, "alice", "fresh");
         let api = api_state(&s);
 
-        let resp = list_history(State(api), Path("fresh".to_string())).await.unwrap();
+        let resp = list_history(api, Path("fresh".to_string())).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
         let j: Value = serde_json::from_slice(&bytes).unwrap();

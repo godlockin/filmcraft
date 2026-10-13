@@ -20,7 +20,7 @@ use std::fs;
 use std::path::Path;
 
 use axum::Json;
-use axum::extract::{Path as AxumPath, State};
+use axum::extract::Path as AxumPath;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use filmcraft_engine::Services;
@@ -61,7 +61,7 @@ pub struct CreateProjectBody {
 ///
 /// `NotFound` from the OSS layer maps to an empty project (a user who has
 /// never created a project). Anything else propagates as a 500.
-pub async fn list_projects(State(api): State<super::ApiState>) -> Result<Response> {
+pub async fn list_projects(api: super::ApiState) -> Result<Response> {
     let dir = user_projects_dir(&api.user_id.0);
     let names = match api.services.list_dir(&dir) {
         Some(Ok(v)) => v,
@@ -113,7 +113,7 @@ pub async fn list_projects(State(api): State<super::ApiState>) -> Result<Respons
 /// 3. Write `current.fcproj` (serialised empty `Project`).
 /// 4. Write `meta.json` (name + zeroed bookkeeping).
 /// 5. Return `201 Created` with the project id.
-pub async fn create_project(State(api): State<super::ApiState>, Json(body): Json<CreateProjectBody>) -> Result<Response> {
+pub async fn create_project(api: super::ApiState, Json(body): Json<CreateProjectBody>) -> Result<Response> {
     validate_component("id", &body.id)?;
     if let Some(name) = &body.name {
         validate_component("name", name)?;
@@ -159,7 +159,7 @@ pub async fn create_project(State(api): State<super::ApiState>, Json(body): Json
 /// path via the resolver's accessor so the same `..`/`ParentDir` guard
 /// rejects traversal, then walk the local tree to delete. Returns `204`
 /// on success, `404` if nothing was there to begin with.
-pub async fn delete_project(State(api): State<super::ApiState>, AxumPath(project_id): AxumPath<String>) -> Result<Response> {
+pub async fn delete_project(api: super::ApiState, AxumPath(project_id): AxumPath<String>) -> Result<Response> {
     validate_component("id", &project_id)?;
 
     // Resolve the OSS directory back to a local path through the services'

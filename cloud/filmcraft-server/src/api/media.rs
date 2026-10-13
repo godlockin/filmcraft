@@ -9,7 +9,7 @@ use std::io::ErrorKind;
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::extract::{Path, State};
+use axum::extract::Path;
 use axum::http::header::{ACCEPT_RANGES, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, RANGE};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -75,7 +75,7 @@ impl ByteRange {
 /// so a `<video>` element can seek without re-downloading. The
 /// `Content-Type` is sniffed from the first 16 bytes (lazily), falling
 /// back to `application/octet-stream` for unknown containers.
-pub async fn stream_media(State(api): State<super::ApiState>, Path((project_id, filename)): Path<(String, String)>, headers: HeaderMap) -> Result<Response> {
+pub async fn stream_media(api: super::ApiState, Path((project_id, filename)): Path<(String, String)>, headers: HeaderMap) -> Result<Response> {
     validate_component("id", &project_id)?;
     validate_component("filename", &filename)?;
 

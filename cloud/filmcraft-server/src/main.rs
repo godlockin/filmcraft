@@ -425,6 +425,12 @@ async fn store_put(State(state): State<AppState>, Path(key): Path<String>, body:
 struct WsQuery {
     #[serde(default)]
     project_id: Option<String>,
+    /// M2.7: session token carried in the URL query string. Browsers
+    /// cannot attach `Authorization` headers to a WS handshake, so
+    /// `?token=` is the equivalent channel. Strict policy: missing or
+    /// invalid → 401.
+    #[serde(default)]
+    token: Option<String>,
 }
 
 /// WebSocket upgrade handler. Hands the upgraded socket to the WS bridge,
@@ -436,22 +442,23 @@ struct WsQuery {
 /// project id is validated at the HTTP boundary so a bad value is a 400
 /// rather than a silently-rewritten key.
 ///
-/// No authentication yet: every connection is treated as the placeholder
-/// `UserId::new("anonymous")`. M2.6 wires the HTTP bearer-token path
-/// (`auth_layer` + `/auth/login`); the WS upgrade is deliberately still
-/// anonymous because browsers can't easily attach `Authorization`
-/// headers to a WS handshake. M2.7 will replace the `UserId::new`
-/// call below with one that reads `?token=...` and goes through
-/// `auth::validate_ws_token(...)`.
+/// Auth (M2.7): `?token=...` carries a session token issued by
+/// `POST /api/v1/auth/login`. Browsers cannot attach an `Authorization`
+/// header to a WS handshake, so the token travels as a URL parameter.
+/// Policy is strict: missing or invalid → 401, no fallback to the old
+/// anonymous identity (one server, one auth policy).
 async fn ws_upgrade(State(state): State<AppState>, Query(q): Query<WsQuery>, ws: axum::extract::ws::WebSocketUpgrade) -> Result<axum::response::Response> {
     let Some(project_id) = q.project_id else {
         return Err(ServerError::BadRequest("missing `project_id` query parameter".into()));
     };
     filmcraft_server::api::validate_component("project_id", &project_id)?;
-    // M2.6 placeholder: `auth::validate_ws_token` is wired in M2.7
-    // (returns `None` for now; same effect as the previous "always
-    // anonymous" behaviour).
-    let key = ProjectKey::new(ANONYMOUS_USER_ID, project_id);
+    // M2.7: resolve `?token=...` against the auth store. `validate_ws_token`
+    // wraps `AuthStore::resolve`; the strict policy lives here so the
+    // function itself stays a pure lookup.
+    let user_id = filmcraft_server::auth::validate_ws_token(&*state.auth, q.token.as_deref())
+        .await
+        .ok_or_else(|| ServerError::Unauthorized("invalid or missing `?token=`".into()))?;
+    let key = ProjectKey::new(user_id.0, project_id);
     let mgr = Arc::clone(&state.sessions);
     Ok(ws.on_upgrade(move |socket| async move {
         filmcraft_server::ws::handle_socket(socket, mgr, key).await;
@@ -726,10 +733,15 @@ mod tests {
         assert!(items.iter().any(|v| v.as_str() == Some("intro.mp4")), "items missing intro.mp4: {items:?}");
 
         // 3. Write a fake .fcproj at current.fcproj, then GET it back.
+        // M2.7: `download_project` reads under the *authenticated* user
+        // (M2.7's `FromRequestParts` override), so the seed PUT must
+        // use the same user the auth layer resolves to. `login` mints
+        // against the hardcoded admin user, so the file goes under
+        // `users/admin/projects/demo/...`.
         let project_blob = b"FCP-JSON-DEMO";
         let resp = app(state.clone())
             .oneshot(with_auth(
-                Request::builder().method("PUT").uri("/api/v1/store/users/test/projects/demo/current.fcproj").body(Body::from(project_blob.to_vec())).unwrap(),
+                Request::builder().method("PUT").uri("/api/v1/store/users/admin/projects/demo/current.fcproj").body(Body::from(project_blob.to_vec())).unwrap(),
                 &token,
             ))
             .await
@@ -1110,14 +1122,24 @@ mod tests {
         format!("ws://{addr}/api/v1/ws")
     }
 
+    /// M2.7 helper: mint a fresh token for the admin user against the
+    /// test's auth store and return its raw string. WS upgrade tests
+    /// attach it as `?token=...`; the strict policy in `ws_upgrade`
+    /// demands a real, currently-valid token (no fallback to anonymous).
+    async fn mint_token(state: &AppState) -> String {
+        filmcraft_server::auth::issue_token(&*state.auth, filmcraft_server::UserId::new(filmcraft_server::auth::ADMIN_USER_ID)).await.0
+    }
+
     /// `ws://` upgrade for an unknown project: the `.fcproj` doesn't
     /// exist, so `handle_socket`'s auto-load fails and the client must
     /// see one `{"ok":false,"error":"project load failed: ..."}` frame
     /// followed by a clean close frame (Close code 1008).
     #[tokio::test]
     async fn ws_with_unknown_project_sends_error_and_closes() {
-        let url = ws_server(test_state()).await;
-        let (mut sock, _upgrade) = tokio_tungstenite::connect_async(format!("{url}?project_id=ghost")).await.unwrap();
+        let state = test_state();
+        let token = mint_token(&state).await;
+        let url = ws_server(state).await;
+        let (mut sock, _upgrade) = tokio_tungstenite::connect_async(format!("{url}?project_id=ghost&token={token}")).await.unwrap();
 
         // Frame 1: the auto-load error.
         let frame = sock.next().await.unwrap().unwrap();
@@ -1149,21 +1171,22 @@ mod tests {
     #[tokio::test]
     async fn ws_with_valid_project_loads_and_runs_command() {
         let state = test_state();
+        let token = mint_token(&state).await;
 
         // Seed `current.fcproj` *directly* under the path the WS bridge
-        // will read from. The HTTP `POST /projects` writes under the
-        // `test` user, but the WS bridge's `anonymous_user()` writes/
-        // reads under `anonymous`, so going through the HTTP endpoint
-        // would put the file in the wrong tree and the auto-load would
-        // legitimately fail. The point of this test is the engine
-        // round-trip, not the HTTP seeding path (which
-        // `fcproj_endpoint_returns_raw_blob` already covers).
-        let oss_path = filmcraft_server::api::current_project_path("anonymous", "smoke");
+        // will read from. M2.7: `?token=...` resolves to the
+        // authenticated user (the test's `mint_token` mints as the
+        // admin user `ADMIN_USER_ID`), so the file must live under
+        // that user tree — not under the pre-M2.6 `anonymous` tree.
+        // The WS bridge now resolves the project key from the real
+        // authenticated user; seeding under `anonymous` would leave
+        // the auto-load to legitimately fail.
+        let oss_path = filmcraft_server::api::current_project_path(filmcraft_server::auth::ADMIN_USER_ID, "smoke");
         let bytes = filmcraft_format::encode(&filmcraft_project::Project::new("Smoke"), true);
         state.services.write_file(&oss_path, &bytes).unwrap();
 
         let url = ws_server(state).await;
-        let (mut sock, _upgrade) = tokio_tungstenite::connect_async(format!("{url}?project_id=smoke")).await.unwrap();
+        let (mut sock, _upgrade) = tokio_tungstenite::connect_async(format!("{url}?project_id=smoke&token={token}")).await.unwrap();
 
         // Send `engine.execute("perf.stats")`. `perf.stats` is the
         // cheapest always-enabled command, so it acts as a smoke that
@@ -1195,22 +1218,28 @@ mod tests {
     #[tokio::test]
     async fn two_ws_isolation_no_cross_pollution() {
         let state = test_state();
-        // Seed two distinct projects directly under the `anonymous`
-        // user tree (where the WS bridge reads/writes). Going through
-        // `POST /projects` would seed under the `test` user that
-        // `ApiState` uses — fine for HTTP-only tests, but the WS bridge
-        // runs as `anonymous` and would not find the files.
+        let token = mint_token(&state).await;
+        // Seed two distinct projects directly under the *authenticated*
+        // user tree. M2.7: `ws_upgrade` now uses the UserId resolved
+        // from `?token=...`, so the WS bridge reads/writes under that
+        // user. Going through `POST /projects` would seed under the
+        // `test` user that `ApiState` uses — fine for HTTP-only tests,
+        // but the WS bridge runs as the authenticated user and would
+        // not find the files.
         for id in ["alpha", "beta"] {
-            let oss_path = filmcraft_server::api::current_project_path("anonymous", id);
+            let oss_path = filmcraft_server::api::current_project_path(filmcraft_server::auth::ADMIN_USER_ID, id);
             let bytes = filmcraft_format::encode(&filmcraft_project::Project::new(id), true);
             state.services.write_file(&oss_path, &bytes).unwrap();
         }
 
         let url = ws_server(state).await;
 
-        // Open both sockets.
-        let (mut sock_a, _) = tokio_tungstenite::connect_async(format!("{url}?project_id=alpha")).await.unwrap();
-        let (mut sock_b, _) = tokio_tungstenite::connect_async(format!("{url}?project_id=beta")).await.unwrap();
+        // Open both sockets, each carrying the same admin token. The
+        // test is about per-project keying, not multi-tenant auth
+        // isolation — both sockets authenticate as the same user but
+        // pick different projects.
+        let (mut sock_a, _) = tokio_tungstenite::connect_async(format!("{url}?project_id=alpha&token={token}")).await.unwrap();
+        let (mut sock_b, _) = tokio_tungstenite::connect_async(format!("{url}?project_id=beta&token={token}")).await.unwrap();
 
         // Socket A: set a unique preference key to "true".
         sock_a
@@ -1263,6 +1292,50 @@ mod tests {
 
         sock_a.close(None).await.unwrap();
         sock_b.close(None).await.unwrap();
+    }
+
+    // ----- M2.7 WS auth integration tests -------------------------------
+    //
+    // M2.7: WS upgrade must require a valid `?token=...`. The two
+    // unhappy paths below cover the strict policy at the HTTP boundary:
+    // missing token → 401, unknown token → 401. The happy-path token
+    // round-trip is exercised by the retrofitted
+    // `ws_with_valid_project_loads_and_runs_command` above.
+
+    /// Handshake without `?token=` must 401. axum's WebSocket upgrade
+    /// runs the handler as an HTTP request before the upgrade, so the
+    /// usual HTTP status code path carries through — we read 401 here.
+    #[tokio::test]
+    async fn ws_without_token_rejects_with_401() {
+        let url = ws_server(test_state()).await;
+        let err =
+            tokio_tungstenite::connect_async(format!("{url}?project_id=anything")).await.expect_err("WS upgrade without token must fail at the handshake");
+        // `tungstenite::Error::Http(Box<Response>)` wraps the HTTP
+        // response the server returned instead of upgrading. The boxed
+        // `Response<Option<Vec<u8>>>` exposes `.status()` for the check.
+        match err {
+            tokio_tungstenite::tungstenite::Error::Http(resp) => {
+                assert_eq!(resp.status().as_u16(), 401, "missing `?token=` must yield 401, got {}", resp.status())
+            }
+            other => panic!("handshake failure must be HTTP-shaped, got {other:?}"),
+        }
+    }
+
+    /// Handshake with a `?token=` value the store doesn't recognise must
+    /// 401. Same HTTP boundary as the missing-token case; the store
+    /// lookup returns `None`, the strict policy turns that into 401.
+    #[tokio::test]
+    async fn ws_with_invalid_token_rejects_with_401() {
+        let url = ws_server(test_state()).await;
+        let err = tokio_tungstenite::connect_async(format!("{url}?project_id=anything&token=deadbeef-dead-beef-dead-beefdeadbeef"))
+            .await
+            .expect_err("WS upgrade with bogus token must fail at the handshake");
+        match err {
+            tokio_tungstenite::tungstenite::Error::Http(resp) => {
+                assert_eq!(resp.status().as_u16(), 401, "invalid `?token=` must yield 401, got {}", resp.status())
+            }
+            other => panic!("handshake failure must be HTTP-shaped, got {other:?}"),
+        }
     }
 
     // ----- M2.6 auth integration tests ---------------------------------

@@ -25,7 +25,8 @@
 
 use axum::Json;
 use axum::body::Body;
-use axum::extract::{Path, State};
+use axum::extract::{FromRef, FromRequestParts, Path};
+use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use filmcraft_engine::Services;
@@ -33,6 +34,7 @@ use serde::Serialize;
 use serde_json::json;
 use tracing::warn;
 
+use crate::auth::CurrentUser;
 use crate::error::{Result, ServerError, map_store_io_error};
 
 pub mod media;
@@ -53,12 +55,36 @@ pub const MAX_UPLOAD_BYTES: usize = 200 * 1024 * 1024;
 #[derive(Clone)]
 pub struct ApiState {
     pub services: std::sync::Arc<crate::services::OssServices>,
+    /// Server-default user id (used when no `CurrentUser` is in the
+    /// request extensions — e.g. on a request the auth layer let
+    /// through as public, or in tests that haven't seeded one).
     pub user_id: crate::UserId,
 }
 
 impl ApiState {
     pub fn new(services: std::sync::Arc<crate::services::OssServices>, user_id: crate::UserId) -> Self {
         Self { services, user_id }
+    }
+}
+
+/// M2.7: per-request `ApiState` for handlers that consume `api: ApiState`
+/// directly (not `State(api): State<ApiState>`). Overrides the
+/// server-default `user_id` with the authenticated user's id when
+/// `auth_layer` put a `CurrentUser` in the request extensions. This
+/// keeps HTTP and the WS bridge looking at the same project tree.
+impl<S> FromRequestParts<S> for ApiState
+where
+    S: Send + Sync,
+    ApiState: FromRef<S>,
+{
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> std::result::Result<Self, Self::Rejection> {
+        let mut api = ApiState::from_ref(state);
+        if let Some(user) = parts.extensions.get::<CurrentUser>() {
+            api.user_id = user.user_id.clone();
+        }
+        Ok(api)
     }
 }
 
@@ -69,7 +95,7 @@ impl ApiState {
 /// The body is stored at
 /// `oss://filmcraft/users/{user_id}/projects/{project_id}/media/{filename}`
 /// after a minimal media-kind sniff.
-pub async fn upload_media(State(api): State<ApiState>, Path(project_id): Path<String>, headers: HeaderMap, body: axum::body::Bytes) -> Result<Response> {
+pub async fn upload_media(api: ApiState, Path(project_id): Path<String>, headers: HeaderMap, body: axum::body::Bytes) -> Result<Response> {
     validate_component("projects", &project_id)?;
 
     let filename = if let Some(v) = headers.get("x-filename").and_then(|v| v.to_str().ok()) {
@@ -114,7 +140,7 @@ pub async fn upload_media(State(api): State<ApiState>, Path(project_id): Path<St
 }
 
 /// GET /api/v1/projects/{project_id}/media
-pub async fn list_media(State(api): State<ApiState>, Path(project_id): Path<String>) -> Result<Response> {
+pub async fn list_media(api: ApiState, Path(project_id): Path<String>) -> Result<Response> {
     validate_component("projects", &project_id)?;
     let dir = format!("oss://filmcraft/{}", media_dir_key(&api.user_id.0, &project_id));
     let items = match api.services.list_dir(&dir) {
@@ -140,7 +166,7 @@ pub async fn list_media(State(api): State<ApiState>, Path(project_id): Path<Stri
 /// the M1.6 acceptance test calls the "export": for M1.6 the export is the
 /// project file itself (importable in the desktop app, see M1.8). A real
 /// rendered video export is M1.11.
-pub async fn download_project(State(api): State<ApiState>, Path(project_id): Path<String>) -> Result<Response> {
+pub async fn download_project(api: ApiState, Path(project_id): Path<String>) -> Result<Response> {
     validate_component("projects", &project_id)?;
     let path = current_project_path(&api.user_id.0, &project_id);
     match api.services.read_file(&path) {
@@ -180,7 +206,7 @@ const OCTET_STREAM: HeaderValue = HeaderValue::from_static("application/octet-st
 /// project (M1.7's `POST /projects` writes the directory but not always
 /// `current.fcproj`) yields a 404 with a clear JSON error rather than a
 /// 500.
-pub async fn get_fcproj(State(api): State<ApiState>, Path(project_id): Path<String>) -> Result<Response> {
+pub async fn get_fcproj(api: ApiState, Path(project_id): Path<String>) -> Result<Response> {
     validate_component("projects", &project_id)?;
     let path = current_project_path(&api.user_id.0, &project_id);
     match api.services.read_file(&path) {
@@ -213,7 +239,7 @@ struct ExportDownload {
     kind: &'static str,
 }
 
-pub async fn export_info(_: State<ApiState>, Path(project_id): Path<String>) -> Result<Response> {
+pub async fn export_info(_: ApiState, Path(project_id): Path<String>) -> Result<Response> {
     validate_component("projects", &project_id)?;
     let info = ExportInfo {
         ok: true,

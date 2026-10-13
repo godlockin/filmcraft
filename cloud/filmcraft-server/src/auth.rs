@@ -17,8 +17,8 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Request, State};
+use axum::http::StatusCode;
 use axum::http::header::AUTHORIZATION;
-use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
@@ -172,9 +172,12 @@ pub async fn run_auth_layer(store: Arc<dyn AuthStore>, mut req: Request, next: N
 /// `CurrentUser` when a valid token is presented; if no token is
 /// presented, `me` returns 401.
 ///
-/// `/api/v1/ws` is public for now because browsers can't easily attach
-/// `Authorization` headers to a WebSocket handshake; M2.7's
-/// `validate_ws_token` will read `?token=...` from the URL instead.
+/// `/api/v1/ws` is public at the HTTP middleware layer because the WS
+/// upgrade is a GET request that the browser cannot stamp with an
+/// `Authorization` header. Authentication happens inside the
+/// `ws_upgrade` handler itself via M2.7's `validate_ws_token`, which
+/// reads `?token=...` from the URL and turns a missing/invalid token
+/// into a 401 at the handshake.
 fn is_public_path(path: &str) -> bool {
     matches!(path, "/api/v1" | "/api/v1/health" | "/api/v1/auth/login" | "/api/v1/ws") || !path.starts_with("/api/v1/")
 }
@@ -232,18 +235,18 @@ pub async fn logout_handler(State(store): State<Arc<dyn AuthStore>>, axum::Exten
     (StatusCode::NO_CONTENT,).into_response()
 }
 
-/// M2.6 placeholder: WebSocket upgrade is still anonymous. When M2.7
-/// wires real auth, this function returns the `UserId` from
-/// `?token=...` (or the `Sec-WebSocket-Protocol` header). The WS
-/// handler itself is unchanged — only the `UserId` passed to
-/// `ProjectKey` moves.
+/// M2.7: resolve a WebSocket handshake token (carried in `?token=…` —
+/// browsers can't attach `Authorization` to a WS upgrade) to its
+/// `UserId`. Returns `None` for absent / malformed / unknown tokens;
+/// the caller (`ws_upgrade`) decides how to turn `None` into a 401.
 ///
-/// Returning `None` for now keeps the WS path anonymous (matches the
-/// pre-M2.6 behaviour); the only call site is `ws_upgrade` in `main.rs`.
-pub fn validate_ws_token(_headers: &HeaderMap, _query: Option<&str>) -> Option<UserId> {
-    // M2.7: parse `query` for `token=...` (URL-decode), call
-    // `store.resolve(...)`, return the resulting UserId.
-    None
+/// `token` is the raw value already URL-decoded by axum's `Query`
+/// extractor (and already split out of `?project_id=…&token=…`).
+pub async fn validate_ws_token(store: &dyn AuthStore, token: Option<&str>) -> Option<UserId> {
+    match token {
+        None => None,
+        Some(t) => store.resolve(&SessionToken(t.to_string())).await,
+    }
 }
 
 #[cfg(test)]
@@ -309,5 +312,105 @@ mod tests {
         // is now marked unsafe, so this would force a per-crate mutex
         // we don't want.
         assert_eq!(resolve_admin_password(), "123456");
+    }
+
+    // ----- M2.7: `validate_ws_token` unit tests --------------------------
+    //
+    // These cover the three shapes of input `?token=...` arrives in after
+    // axum's `Query` extractor has already URL-decoded it: absent
+    // (`Option::None`), present-but-empty, and present-and-non-empty.
+    // The "other URL fields alongside token" case is folded in too —
+    // the caller (ws_upgrade) hands us the token field value as a raw
+    // `&str`, so we don't see the ordering or the encoding, only the
+    // value we get to resolve against the store.
+
+    /// No token at all (the URL had no `?token=` key) → `None` is
+    /// returned. The caller (`ws_upgrade`) maps that to 401.
+    #[tokio::test]
+    async fn validate_ws_token_missing_returns_none() {
+        let s = store_with("123456");
+        // Even an otherwise valid token in the store must not be reached
+        // when the caller passes None — this guards the "don't fall back
+        // silently" invariant.
+        let _valid = issue_token(&s, UserId::new(ADMIN_USER_ID)).await;
+        assert!(validate_ws_token(&s, None).await.is_none());
+    }
+
+    /// An empty `?token=` (`Some("")`) must be treated as missing.
+    /// Otherwise a misconfigured client could send an empty token
+    /// string and bypass the lookup in a confusing way.
+    #[tokio::test]
+    async fn validate_ws_token_empty_returns_none() {
+        let s = store_with("123456");
+        assert!(validate_ws_token(&s, Some("")).await.is_none());
+    }
+
+    /// A token value the store has never issued → `None`. Mirrors the
+    /// HTTP `auth_layer` behaviour for invalid bearer tokens.
+    #[tokio::test]
+    async fn validate_ws_token_unknown_returns_none() {
+        let s = store_with("123456");
+        let bogus = "deadbeef-dead-beef-dead-beefdeadbeef";
+        assert!(validate_ws_token(&s, Some(bogus)).await.is_none());
+    }
+
+    /// A freshly-issued token round-trips through `validate_ws_token`
+    /// back to the issuing user. This is the happy-path acceptance.
+    #[tokio::test]
+    async fn validate_ws_token_valid_resolves_user() {
+        let s = store_with("123456");
+        let token = issue_token(&s, UserId::new(ADMIN_USER_ID)).await;
+        assert_eq!(validate_ws_token(&s, Some(&token.0)).await, Some(UserId::new(ADMIN_USER_ID)));
+    }
+
+    /// After `revoke(token)`, the same token must resolve to `None` via
+    /// `validate_ws_token`. Mirrors the HTTP `logout_handler` path —
+    /// once a session is logged out, the WS handshake can't reanimate
+    /// it via the URL.
+    #[tokio::test]
+    async fn validate_ws_token_revoked_returns_none() {
+        let s = store_with("123456");
+        let token = issue_token(&s, UserId::new(ADMIN_USER_ID)).await;
+        assert!(s.revoke(&token).await);
+        assert!(validate_ws_token(&s, Some(&token.0)).await.is_none());
+    }
+
+    /// A token issued by one store is unknown to a fresh store
+    /// (post-restart). `validate_ws_token` matches `resolve`'s contract:
+    /// in-flight WS sessions are dropped on server restart.
+    #[tokio::test]
+    async fn validate_ws_token_unknown_after_restart_returns_none() {
+        let s1 = store_with("123456");
+        let token = issue_token(&s1, UserId::new(ADMIN_USER_ID)).await;
+        let s2 = store_with("123456");
+        assert!(validate_ws_token(&s2, Some(&token.0)).await.is_none());
+    }
+
+    /// The function only sees the token value — it doesn't care whether
+    /// the URL also carried `?project_id=…`. Both shapes
+    /// (`?project_id=X&token=Y`, `?token=X&project_id=Y`) land at the
+    /// same call site with the same `&str`; ordering is a property of
+    /// axum's `Query` extractor, not of this function. This test guards
+    /// that contract explicitly: nothing here reads the project id,
+    /// only the token.
+    #[tokio::test]
+    async fn validate_ws_token_ignores_other_query_fields() {
+        let s = store_with("123456");
+        let token = issue_token(&s, UserId::new(ADMIN_USER_ID)).await;
+        // Same value passed in — what `ws_upgrade` would hand us whether
+        // the URL was `?project_id=foo&token=…` or `?token=…&project_id=foo`.
+        assert_eq!(validate_ws_token(&s, Some(&token.0)).await, Some(UserId::new(ADMIN_USER_ID)));
+    }
+
+    /// `validate_ws_token` is a thin wrapper around
+    /// `AuthStore::resolve`, so a trait-object dispatch
+    /// (`&dyn AuthStore`) must work the same as the concrete
+    /// `HardcodedAuthStore` — that's how `main.rs` calls it via
+    /// `&*state.auth`.
+    #[tokio::test]
+    async fn validate_ws_token_works_through_dyn() {
+        let s = HardcodedAuthStore::shared("123456".to_string());
+        let token = issue_token(&*s, UserId::new(ADMIN_USER_ID)).await;
+        assert_eq!(validate_ws_token(&*s, Some(&token.0)).await, Some(UserId::new(ADMIN_USER_ID)));
     }
 }
