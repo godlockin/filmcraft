@@ -379,8 +379,26 @@ async fn serve_static_fallback(ui: Arc<WebUi>, req: axum::extract::Request) -> R
         "" => "text/html; charset=utf-8", // default to HTML for `index.html`-like paths
         _ => "application/octet-stream",
     };
+    // Cache policy: `index.html` (the entry point that references
+    // content-hashed asset names) must always be revalidated so a
+    // fresh build of the SPA reaches the browser without a manual
+    // cache clear. The hashed assets themselves (`.js`, `.css`, etc.)
+    // are content-addressable, so a year-long `max-age` is safe — if
+    // the asset changes, the URL changes, and the new URL is what
+    // the fresh `index.html` will request.
+    //
+    // Without this, a browser that cached an older `index.html`
+    // (referencing `index-D3Czw_k5.js`) will keep requesting the old
+    // asset name on every reload, get HTML back (the SPA fallback
+    // when the file is missing), and fail to parse it as JS.
+    let cache_control: &'static str = if content_type.starts_with("text/html") {
+        "no-cache, must-revalidate"
+    } else {
+        "public, max-age=31536000, immutable"
+    };
     let mut response_headers = axum::http::HeaderMap::new();
     response_headers.insert(CONTENT_TYPE, axum::http::HeaderValue::from_static(content_type));
+    response_headers.insert(axum::http::header::CACHE_CONTROL, axum::http::HeaderValue::from_static(cache_control));
     (StatusCode::OK, response_headers, Body::from(bytes)).into_response()
 }
 
