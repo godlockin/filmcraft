@@ -1,0 +1,138 @@
+.export-mode-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  padding: 8px;
+  overflow: auto;
+}
+.export-mode-root.is-full {
+  height: calc(100vh - var(--header-h) - var(--status-h));
+}
+
+.export-mode-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--panel-bg);
+  border: 1px solid var(--field-border);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+}
+
+.export-mode-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--small-size);
+  color: var(--text-dim);
+}
+.export-mode-field > span {
+  color: var(--text-faint);
+}
+.export-mode-field input,
+.export-mode-field select {
+  background: var(--field-bg);
+  border: 1px solid var(--field-border);
+  color: var(--text);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  font-size: var(--body-size);
+}
+
+.export-mode-row {
+  display: flex;
+  gap: 6px;
+}
+.export-mode-row .export-mode-field {
+  flex: 1 1 0;
+}
+
+.export-mode-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.export-mode-export,
+.export-mode-quick,
+.export-mode-close {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: white;
+  padding: 4px 12px;
+  font-size: var(--body-size);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.export-mode-quick,
+.export-mode-close {
+  background: var(--hover);
+  border-color: var(--field-border);
+  color: var(--text);
+}
+.export-mode-export:hover {
+  background: var(--focus);
+}
+.export-mode-quick:hover,
+.export-mode-close:hover {
+  background: var(--pressed);
+}
+.export-mode-export:disabled,
+.export-mode-quick:disabled,
+.export-mode-close:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.export-mode-queue {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.export-mode-job {
+  display: flex;
+  gap: 8px;
+  padding: 2px 6px;
+  background: var(--field-bg);
+  border: 1px solid var(--field-border);
+  border-radius: var(--radius-sm);
+  font-size: var(--small-size);
+  color: var(--text);
+}
+.export-mode-job-id {
+  flex: 1 1 auto;
+  color: var(--text-dim);
+  font-family: monospace;
+}
+.export-mode-job-status {
+  color: var(--text-faint);
+}
+.export-mode-job-progress {
+  color: var(--hot-text);
+}
+
+.export-mode-empty {
+  color: var(--text-faint);
+  padding: 12px;
+  text-align: center;
+  font-size: var(--small-size);
+}
+
+.export-mode-download {
+  display: inline-block;
+  margin-top: 8px;
+  background: var(--render-green);
+  color: white;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  font-size: var(--body-size);
+  text-decoration: none;
+  align-self: flex-start;
+}
+.export-mode-download:hover {
+  filter: brightness(1.2);
+}
