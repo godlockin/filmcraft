@@ -1,0 +1,69 @@
+.essential-sound-empty {
+  color: var(--text-faint);
+  padding: 12px;
+  text-align: center;
+  font-size: var(--small-size);
+}
+
+.essential-sound-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  height: 100%;
+}
+
+.essential-sound-row {
+  display: grid;
+  grid-template-columns: 1fr 100px 80px;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--separator);
+}
+
+.essential-sound-name {
+  color: var(--text);
+  font-size: var(--body-size);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.essential-sound-tag {
+  background: var(--field-bg);
+  color: var(--text);
+  border: 1px solid var(--field-border);
+  border-radius: var(--radius-sm);
+  padding: 2px 4px;
+  font-size: var(--small-size);
+}
+
+.essential-sound-pill {
+  font-size: var(--small-size);
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+  text-align: center;
+}
+
+.essential-sound-pill.is-dialogue {
+  background: rgba(45, 157, 120, 0.2);
+  color: var(--render-green);
+}
+.essential-sound-pill.is-music {
+  background: rgba(240, 240, 79, 0.15);
+  color: var(--render-yellow);
+}
+.essential-sound-pill.is-sfx {
+  background: rgba(227, 72, 80, 0.15);
+  color: var(--render-red);
+}
+.essential-sound-pill.is-ambience,
+.essential-sound-pill.is-atmosphere {
+  background: rgba(65, 150, 243, 0.2);
+  color: var(--hot-text);
+}
+.essential-sound-pill.is-empty {
+  background: var(--field-bg);
+  color: var(--text-faint);
+}

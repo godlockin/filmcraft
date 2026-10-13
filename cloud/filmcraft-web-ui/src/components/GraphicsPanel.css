@@ -1,0 +1,94 @@
+.graphics-root {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  height: 100%;
+  overflow: hidden;
+}
+
+.graphics-toolbar {
+  display: flex;
+  gap: 4px;
+  padding: 4px 6px;
+}
+
+.graphics-search,
+.graphics-category {
+  background: var(--field-bg);
+  color: var(--text);
+  border: 1px solid var(--field-border);
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+  font-size: var(--small-size);
+}
+
+.graphics-search {
+  flex: 1 1 auto;
+}
+
+.graphics-empty {
+  color: var(--text-faint);
+  padding: 12px;
+  text-align: center;
+  font-size: var(--small-size);
+}
+
+.graphics-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0 6px 6px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 6px;
+  overflow: auto;
+}
+
+.graphics-card {
+  display: flex;
+  flex-direction: column;
+  background: var(--field-bg);
+  border: 1px solid var(--field-border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.graphics-thumb {
+  height: 64px;
+  background-color: var(--row-alt);
+  background-size: cover;
+  background-position: center;
+}
+
+.graphics-meta {
+  padding: 4px 6px;
+  flex: 1 1 auto;
+}
+
+.graphics-name {
+  color: var(--text);
+  font-size: var(--small-size);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.graphics-cat {
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.graphics-apply {
+  background: var(--hover);
+  border: none;
+  color: var(--text);
+  padding: 4px;
+  font-size: var(--small-size);
+  cursor: pointer;
+}
+.graphics-apply:hover:not(:disabled) {
+  background: var(--accent);
+}
+.graphics-apply:disabled {
+  color: var(--text-faint);
+  cursor: default;
+}

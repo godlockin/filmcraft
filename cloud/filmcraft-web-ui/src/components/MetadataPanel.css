@@ -1,0 +1,49 @@
+.metadata-empty {
+  color: var(--text-faint);
+  padding: 12px;
+  text-align: center;
+  font-size: var(--small-size);
+}
+
+.metadata-sections {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: auto;
+}
+
+.metadata-section {
+  border-bottom: 1px solid var(--separator);
+  padding: 4px 6px;
+}
+
+.metadata-section-title {
+  color: var(--text-dim);
+  font-size: var(--small-size);
+  padding: 2px 0;
+}
+
+.metadata-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.metadata-row {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  gap: 4px;
+  padding: 2px 0;
+  font-size: var(--small-size);
+}
+
+.metadata-key {
+  color: var(--text-faint);
+}
+
+.metadata-value {
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
