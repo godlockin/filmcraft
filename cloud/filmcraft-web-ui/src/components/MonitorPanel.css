@@ -1,0 +1,74 @@
+.monitor-stack {
+  display: grid;
+  grid-template-rows: 1fr 1fr;
+  gap: var(--gap);
+  height: 100%;
+  min-height: 0;
+}
+
+.monitor {
+  position: relative;
+  background: var(--monitor-bg);
+  border: 1px solid var(--field-border);
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.monitor.is-focused {
+  border-color: var(--focus);
+}
+
+.monitor-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: black;
+}
+
+.monitor-timecode {
+  position: absolute;
+  bottom: 6px;
+  left: 6px;
+  color: var(--timecode);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 14px;
+  background: rgba(0, 0, 0, 0.4);
+  padding: 1px 6px;
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+.monitor-kind {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  color: var(--text-faint);
+  font-size: var(--small-size);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.monitor-tabs {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.monitor-tab {
+  height: 22px;
+  padding: 0 8px;
+  font-size: var(--small-size);
+  background: var(--field-bg);
+  border: 1px solid var(--field-border);
+  color: var(--text-dim);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.monitor-tab:hover {
+  color: var(--text);
+}
+.monitor-tab.is-active {
+  background: var(--row-selected);
+  color: var(--text);
+}

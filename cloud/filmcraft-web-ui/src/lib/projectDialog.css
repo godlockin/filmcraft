@@ -1,0 +1,47 @@
+.project-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.project-dialog {
+  background: var(--panel-bg);
+  border: 1px solid var(--field-border);
+  border-radius: var(--radius-sm);
+  width: min(900px, 90vw);
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.project-dialog-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: var(--header-bg);
+  border-bottom: 1px solid var(--separator);
+  color: var(--text);
+  font-size: var(--body-size);
+  font-weight: 500;
+}
+
+.project-dialog-close {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.project-dialog-body {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 16px;
+  color: var(--text);
+}
