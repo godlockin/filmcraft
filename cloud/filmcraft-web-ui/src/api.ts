@@ -21,21 +21,42 @@ import type {
   ListMediaResponse,
   ListProjectsResponse,
 } from "./types";
+import { getAuthToken } from "./lib/auth";
 
 const prefix = "/api/v1";
+
+/**
+ * Build the headers for a request: `Authorization: Bearer <token>`
+ * when a token is present in localStorage, otherwise an empty
+ * object. Centralised so the HTTP / XHR / WS paths stay in lockstep —
+ * if the server ever accepts a different scheme, this is the only
+ * place that needs to change.
+ */
+function authHeaders(): Record<string, string> {
+  const out: Record<string, string> = {};
+  const token = getAuthToken();
+  if (token !== null) {
+    out["Authorization"] = `Bearer ${token}`;
+  }
+  return out;
+}
 
 async function jsonRequest<T>(
   method: "GET" | "POST" | "DELETE",
   path: string,
   body?: unknown,
 ): Promise<T> {
-  const headers: Record<string, string> = {};
+  const headers = authHeaders();
   let payload: BodyInit | undefined;
   if (body !== undefined) {
     headers["Content-Type"] = "application/json";
     payload = JSON.stringify(body);
   }
-  const resp = await fetch(`${prefix}${path}`, { method, headers, body: payload });
+  const resp = await fetch(`${prefix}${path}`, {
+    method,
+    headers,
+    body: payload,
+  });
   if (!resp.ok) {
     throw await asApiError(resp, method, path);
   }
@@ -98,6 +119,13 @@ export function uploadMedia(
     xhr.open("POST", `${prefix}/projects/${encodeURIComponent(projectId)}/media`, true);
     xhr.setRequestHeader("X-Filename", file.name);
     xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+    // M2.7b: stamp the bearer token when present. XHR doesn't read from
+    // `authHeaders()` directly because each header must be set via
+    // `setRequestHeader`, but the lookup is the same.
+    const token = getAuthToken();
+    if (token !== null) {
+      xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    }
     xhr.upload.onprogress = (ev: ProgressEvent) => {
       if (onProgress && ev.lengthComputable) {
         onProgress(ev.loaded / ev.total);
@@ -154,7 +182,10 @@ export interface FetchFcprojResult {
 
 export async function fetchFcproj(projectId: string): Promise<FetchFcprojResult> {
   const url = `${prefix}/projects/${encodeURIComponent(projectId)}/fcproj`;
-  const resp = await fetch(url);
+  // M2.7b: the raw-bytes endpoint sits behind the auth layer just like
+  // every other `/api/v1` route. `authHeaders({})` is the empty-extra
+  // form — Content-Type isn't set because the body is bytes, not JSON.
+  const resp = await fetch(url, { headers: authHeaders() });
   const contentType = resp.headers.get("content-type");
   const buf = new Uint8Array(await resp.arrayBuffer());
   if (resp.ok) {

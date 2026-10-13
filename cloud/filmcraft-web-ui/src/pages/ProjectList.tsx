@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import ProjectCard from "../components/ProjectCard";
+import LogoutButton from "../components/LogoutButton";
 import { createProject, deleteProject, listProjects } from "../api";
 import type { Project } from "../types";
 
@@ -63,6 +64,9 @@ export default function ProjectList() {
   return (
     <div>
       <h2>Projects</h2>
+      <div className="project-list-header">
+        <LogoutButton />
+      </div>
       {error && <div className="error">{error}</div>}
 
       {!creating ? (

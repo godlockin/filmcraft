@@ -19,15 +19,9 @@
 const STORAGE_KEY = "filmcraft.recentCommands";
 export const MAX_RECENT = 16;
 
-function safeStorage(): Storage | null {
-  if (typeof window === "undefined") return null;
-  try {
-    return window.localStorage;
-  } catch {
-    // Some browsers throw on access (Safari private mode, denied cookies).
-    return null;
-  }
-}
+// Centralised in `lib/storage.ts` so `lib/auth.ts` shares the same
+// guard. Re-imported here for proximity to its only consumer.
+import { safeStorage } from "./storage";
 
 /** Load the persisted recent-ids list. Returns `[]` on any error. */
 export function loadRecent(): string[] {

@@ -32,6 +32,7 @@
  */
 
 import type { ConnectionState, WsReply } from "./types";
+import { getAuthToken } from "./lib/auth";
 
 /** Maximum time to wait for a single round-trip before rejecting. */
 const REPLY_TIMEOUT_MS = 10_000;
@@ -61,7 +62,7 @@ interface QueuedSend {
 export type ClientStateListener = (state: ConnectionState, detail?: { error?: string }) => void;
 
 export class WsClient {
-  private url: string;
+  private urlProvider: () => string;
   private ws: WebSocket | null = null;
   private state: ConnectionState = "idle";
   private listeners = new Set<ClientStateListener>();
@@ -72,8 +73,16 @@ export class WsClient {
   /** Last fatal error — kept so the UI can show it after the socket is gone. */
   private lastFatal: string | null = null;
 
-  constructor(url: string) {
-    this.url = url;
+  /**
+   * Accept either a literal URL string (the M2.2 shape) or a thunk
+   * that returns the URL on demand. M2.7b uses the thunk form so
+   * reconnects re-read the bearer token from `localStorage` — a
+   * `logout()` that clears the slice is then visible to the next
+   * reconnect attempt, which 401s on the server and the user is
+   * returned to the login gate.
+   */
+  constructor(url: string | (() => string)) {
+    this.urlProvider = typeof url === "function" ? url : () => url;
   }
 
   /** Current connection state — read-only; UI subscribes via `onState`. */
@@ -205,7 +214,10 @@ export class WsClient {
     return new Promise<void>((resolve, reject) => {
       let ws: WebSocket;
       try {
-        ws = new WebSocket(this.url);
+        // Re-derive the URL on every (re)connect so a `logout()`
+        // that clears the auth slice is picked up by the next
+        // reconnect attempt — see `WsClient` constructor docs.
+        ws = new WebSocket(this.urlProvider());
       } catch (e) {
         const err = e instanceof Error ? e : new Error(String(e));
         this.setState("closed", { error: err.message });
@@ -375,9 +387,18 @@ export class WsClient {
  * Derive the WebSocket URL for `/api/v1/ws?project_id=<id>` from the
  * current `window.location`. The browser-side `ws://` (or `wss://`)
  * scheme must match `http://`/`https://`; we let the URL class do that.
+ *
+ * M2.7b: when a bearer token is present in localStorage the server
+ * requires it as `?token=<token>` (browsers can't stamp an
+ * `Authorization` header on a WS upgrade). The token is re-read on
+ * every call so post-logout reconnects pick up the cleared slice and
+ * the server 401s the new handshake.
  */
 export function wsUrl(projectId: string): string {
   const loc = window.location;
   const proto = loc.protocol === "https:" ? "wss:" : "ws:";
-  return `${proto}//${loc.host}/api/v1/ws?project_id=${encodeURIComponent(projectId)}`;
+  const token = getAuthToken();
+  const base = `${proto}//${loc.host}/api/v1/ws?project_id=${encodeURIComponent(projectId)}`;
+  if (token === null) return base;
+  return `${base}&token=${encodeURIComponent(token)}`;
 }

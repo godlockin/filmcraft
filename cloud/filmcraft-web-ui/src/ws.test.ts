@@ -20,7 +20,8 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { WsClient } from "./ws";
+import { WsClient, wsUrl } from "./ws";
+import { clearAuth, setAuth } from "./lib/auth";
 
 // Polyfill `CloseEvent` — happy-dom doesn't ship it. We only use the
 // `code` and `reason` fields, so a small subclass of `Event` is enough.
@@ -244,5 +245,49 @@ describe("WsClient", () => {
     await new Promise((r) => setTimeout(r, 50));
     // No second FakeWS was created.
     expect(FakeWS.instances).toHaveLength(1);
+  });
+});
+
+describe("wsUrl (M2.7b)", () => {
+  const originalLocation = window.location;
+  const originalProtocol = originalLocation.protocol;
+  const originalHost = originalLocation.host;
+
+  function setLocation(protocol: string, host: string): void {
+    // happy-dom lets us patch these via `Object.defineProperty`. We
+    // don't restore the original descriptor across tests because
+    // happy-dom is recreated per test file in the standard config.
+    Object.defineProperty(window, "location", {
+      value: { ...originalLocation, protocol, host },
+      configurable: true,
+    });
+  }
+
+  afterEach(() => {
+    clearAuth();
+    // Restore in case a test changed them.
+    setLocation(originalProtocol, originalHost);
+  });
+
+  it("builds the bare URL with just ?project_id when no token is set", () => {
+    setLocation("http:", "example.test:5173");
+    expect(wsUrl("demo")).toBe("ws://example.test:5173/api/v1/ws?project_id=demo");
+  });
+
+  it("appends &token=<token> when a token is in localStorage", () => {
+    setLocation("https:", "film.test");
+    setAuth({ token: "tok-1", userId: "admin", role: "admin" });
+    expect(wsUrl("demo")).toBe("wss://film.test/api/v1/ws?project_id=demo&token=tok-1");
+  });
+
+  it("URL-encodes a project id that contains special characters", () => {
+    setLocation("http:", "example.test:5173");
+    expect(wsUrl("a/b c")).toBe("ws://example.test:5173/api/v1/ws?project_id=a%2Fb%20c");
+  });
+
+  it("URL-encodes a token that contains special characters", () => {
+    setLocation("http:", "example.test:5173");
+    setAuth({ token: "a/b c", userId: "admin", role: "admin" });
+    expect(wsUrl("demo")).toBe("ws://example.test:5173/api/v1/ws?project_id=demo&token=a%2Fb%20c");
   });
 });

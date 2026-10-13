@@ -25,7 +25,16 @@ import { create } from "zustand";
 import { WsClient, wsUrl } from "./ws";
 import { fetchFcproj } from "./api";
 import { loadRecent, pushRecent } from "./lib/history";
+import { clearAuth, getAuth, setAuth, type AuthState } from "./lib/auth";
 import type { ConnectionState, CommandInfo } from "./types";
+
+/** Body of `POST /api/v1/auth/login` and its 200-response shape. */
+interface LoginResponse {
+  ok: boolean;
+  token?: string;
+  user?: { id: string; role: string };
+  error?: string;
+}
 
 /** Result of an engine command (typed loosely on purpose; the server is schemaless). */
 export type EngineResult = unknown;
@@ -72,6 +81,18 @@ export interface EngineState {
   /** Most-recently-used command ids (MRU first), persisted across reloads. */
   recentCommands: string[];
 
+  // ----- auth (M2.7b) -----
+  /**
+   * Current bearer-token slice, or `null` when the user isn't logged in.
+   * `null` until `hydrateAuth()` runs on the client (see App.tsx), since
+   * `localStorage` is only available in the browser. The HTTP and WS
+   * transports re-read the token from storage on every call, so a
+   * `logout()` outside React still takes effect for the next request.
+   */
+  auth: AuthState | null;
+  /** Last login error message (rendered by `<LoginGate />`). `null` on success / before first attempt. */
+  authError: string | null;
+
   // ----- actions -----
   connect: (projectId: string) => Promise<void>;
   disconnect: () => void;
@@ -91,6 +112,22 @@ export interface EngineState {
   runCommand: (command: string) => Promise<EngineResult>;
   /** Force-refresh the recent list (e.g. after the user clears it). */
   reloadRecentCommands: () => void;
+  /** Load any persisted auth slice from localStorage into the store. Idempotent. */
+  hydrateAuth: () => void;
+  /**
+   * Exchange username + password for a session token. On success the
+   * store records the new auth slice and persists it to localStorage;
+   * on failure `authError` is set and the promise rejects. Clears any
+   * prior `authError` at the start of the call.
+   */
+  login: (username: string, password: string) => Promise<void>;
+  /**
+   * Revoke the current session (idempotent 204), then clear the in-memory
+   * and persisted auth slice. Always resolves — a network failure is
+   * reported through `authError` but the local state is still cleared so
+   * the UI returns to the login gate.
+   */
+  logout: () => Promise<void>;
 }
 
 /** Internal helper that gets / sets `client` outside React render. */
@@ -112,6 +149,14 @@ export const useEngineStore = create<EngineState>((set, get) => ({
   // unit tests, denied-storage browsers), so this is safe to call
   // unconditionally.
   recentCommands: loadRecent(),
+  // Auth is NOT eagerly hydrated here — the store is also constructed on
+  // the server side (Vite SSR, unit tests in node) and on a fresh client
+  // mount. The actual `getAuth()` call lives in `hydrateAuth()` which
+  // `App.tsx` runs from a `useEffect` so localStorage is guaranteed to
+  // be reachable. M2.7b keeps `auth: null` until then, so the gate
+  // shows briefly on first paint and then snaps to the real state.
+  auth: null,
+  authError: null,
 
   async connect(projectId: string): Promise<void> {
     if (get().activeProject === projectId && get().connectionState === "open") {
@@ -135,7 +180,11 @@ export const useEngineStore = create<EngineState>((set, get) => ({
       commands: null,
       rawFcproj: null,
     });
-    const next = new WsClient(wsUrl(projectId));
+    // Pass a thunk so the WS re-derives `?token=…` on every (re)connect
+    // attempt. After a `logout()` clears the slice the next reconnect
+    // opens without the token and the server 401s the handshake, which
+    // is the desired signal that the session is over.
+    const next = new WsClient(() => wsUrl(projectId));
     client = next;
     unsubState = next.onState((state, detail) => {
       set({ connectionState: state });
@@ -294,6 +343,68 @@ export const useEngineStore = create<EngineState>((set, get) => ({
 
   reloadRecentCommands(): void {
     set({ recentCommands: loadRecent() });
+  },
+
+  hydrateAuth(): void {
+    // Idempotent: App.tsx calls this from a `useEffect` and React
+    // strict-mode double-invokes effects in dev. Re-reads the slice on
+    // every call so a `setAuth()` from another tab is picked up the
+    // next time the user navigates.
+    set({ auth: getAuth() });
+  },
+
+  async login(username: string, password: string): Promise<void> {
+    set({ authError: null });
+    let resp: Response;
+    try {
+      resp = await fetch("/api/v1/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      set({ authError: `network error: ${msg}` });
+      throw e instanceof Error ? e : new Error(msg);
+    }
+    let body: LoginResponse;
+    try {
+      body = (await resp.json()) as LoginResponse;
+    } catch (e) {
+      const msg = `login: bad response (status ${resp.status})`;
+      set({ authError: msg });
+      throw e instanceof Error ? e : new Error(msg);
+    }
+    if (!resp.ok || !body.ok || typeof body.token !== "string" || body.user === undefined) {
+      const msg = body.error ?? `login failed (status ${resp.status})`;
+      set({ authError: msg });
+      throw new Error(msg);
+    }
+    const next: AuthState = { token: body.token, userId: body.user.id, role: body.user.role };
+    setAuth(next);
+    set({ auth: next, authError: null });
+  },
+
+  async logout(): Promise<void> {
+    // The logout endpoint is idempotent (204 either way), and the local
+    // slice must be cleared even when the request fails so the UI
+    // returns to the gate. Capture any error first, then reset state
+    // so the message survives the final `set` rather than being
+    // overwritten by `authError: null`.
+    const current = get().auth;
+    let netError: string | null = null;
+    if (current !== null) {
+      try {
+        await fetch("/api/v1/auth/logout", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${current.token}` },
+        });
+      } catch (e) {
+        netError = e instanceof Error ? e.message : String(e);
+      }
+    }
+    clearAuth();
+    set({ auth: null, authError: netError });
   },
 }));
 
