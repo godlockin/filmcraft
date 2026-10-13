@@ -97,9 +97,19 @@ export async function listMedia(projectId: string): Promise<ListMediaResponse> {
 /**
  * URL the browser passes into `<video src>`. We don't fetch — the browser
  * opens a single socket with `Range` semantics and seeks freely.
+ *
+ * M2.7c: when a bearer token is present in localStorage the server
+ * requires it as `?token=<token>` (browsers can't stamp an
+ * `Authorization` header on a `<video>` request, the same reason WS
+ * uses query-token auth — see `wsUrl()` and M2.7). The token is
+ * re-read on every call so post-logout refreshes pick up the cleared
+ * slice and the server 401s the new media fetch.
  */
 export function streamUrl(projectId: string, filename: string): string {
-  return `${prefix}/projects/${encodeURIComponent(projectId)}/media/${encodeURIComponent(filename)}`;
+  const base = `${prefix}/projects/${encodeURIComponent(projectId)}/media/${encodeURIComponent(filename)}`;
+  const token = getAuthToken();
+  if (token === null) return base;
+  return `${base}?token=${encodeURIComponent(token)}`;
 }
 
 /**

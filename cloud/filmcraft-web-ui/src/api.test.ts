@@ -14,7 +14,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fetchFcproj, listProjects, uploadMedia } from "./api";
+import { fetchFcproj, listProjects, streamUrl, uploadMedia } from "./api";
 import { clearAuth, setAuth } from "./lib/auth";
 
 const TOKEN = "test-token-abc-123";
@@ -117,5 +117,45 @@ describe("api auth headers (M2.7b)", () => {
     expect(sent.method).toBe("POST");
     expect(sent.url).toMatch(/\/api\/v1\/projects\/demo\/media$/);
     expect(sent.headers["Authorization"]).toBe(`Bearer ${TOKEN}`);
+  });
+});
+
+/**
+ * M2.7c: `<video src>` can't stamp an `Authorization` header, so the
+ * browser hits the media-stream URL with the bearer token in the
+ * `?token=` query param. `streamUrl()` mirrors `wsUrl()`'s pattern
+ * (M2.7) line-for-line — when a token is in localStorage it appends
+ * `?token=<encoded>`, otherwise it returns the bare URL. Mirrors the
+ * `wsUrl` tests in `ws.test.ts:272-292`.
+ */
+describe("streamUrl auth (M2.7c)", () => {
+  beforeEach(() => {
+    clearAuth();
+  });
+
+  afterEach(() => {
+    clearAuth();
+  });
+
+  it("returns the bare URL with no query string when no token is set", () => {
+    expect(streamUrl("demo", "clip.mp4")).toBe("/api/v1/projects/demo/media/clip.mp4");
+  });
+
+  it("appends ?token=<token> when a token is in localStorage", () => {
+    setAuth({ token: "tok-1", userId: "admin", role: "admin" });
+    expect(streamUrl("demo", "clip.mp4")).toBe("/api/v1/projects/demo/media/clip.mp4?token=tok-1");
+  });
+
+  it("URL-encodes a project id that contains special characters", () => {
+    expect(streamUrl("a/b c", "clip.mp4")).toBe("/api/v1/projects/a%2Fb%20c/media/clip.mp4");
+  });
+
+  it("URL-encodes a filename that contains special characters", () => {
+    expect(streamUrl("demo", "a/b c.mp4")).toBe("/api/v1/projects/demo/media/a%2Fb%20c.mp4");
+  });
+
+  it("URL-encodes a token that contains special characters", () => {
+    setAuth({ token: "a/b c", userId: "admin", role: "admin" });
+    expect(streamUrl("demo", "clip.mp4")).toBe("/api/v1/projects/demo/media/clip.mp4?token=a%2Fb%20c");
   });
 });

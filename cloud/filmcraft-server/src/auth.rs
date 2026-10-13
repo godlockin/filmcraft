@@ -164,25 +164,63 @@ pub async fn run_auth_layer(store: Arc<dyn AuthStore>, mut req: Request, next: N
 }
 
 /// Public paths that skip authentication: the API doc, health, login,
-/// the WebSocket upgrade, and anything outside `/api/v1/...` (the SPA
-/// fallback).
+/// the WebSocket upgrade, the media-stream endpoint, and anything
+/// outside `/api/v1/...` (the SPA fallback).
 ///
 /// Note: `/api/v1/auth/me` is intentionally NOT public — it's the canary
 /// for "is my token still valid?". `auth_layer` only inserts
 /// `CurrentUser` when a valid token is presented; if no token is
 /// presented, `me` returns 401.
 ///
-/// `/api/v1/ws` is public at the HTTP middleware layer because the WS
-/// upgrade is a GET request that the browser cannot stamp with an
-/// `Authorization` header. Authentication happens inside the
-/// `ws_upgrade` handler itself via M2.7's `validate_ws_token`, which
-/// reads `?token=...` from the URL and turns a missing/invalid token
-/// into a 401 at the handshake.
-fn is_public_path(path: &str) -> bool {
-    matches!(path, "/api/v1" | "/api/v1/health" | "/api/v1/auth/login" | "/api/v1/ws") || !path.starts_with("/api/v1/")
+/// `/api/v1/ws` and `/api/v1/projects/{project_id}/media/{filename}`
+/// are public at the HTTP middleware layer because the browser cannot
+/// stamp an `Authorization` header on those requests (WS upgrades have
+/// no header surface, and `<video src>` is fetch-with-Range that the
+/// browser controls). Authentication happens inside the per-route
+/// handler / middleware itself:
+///
+///   * WS: M2.7's `validate_ws_token` reads `?token=…` from the URL
+///     and returns 401 at the handshake.
+///   * media-stream: M2.7c's `query_token_fallback` middleware
+///     accepts either `Authorization: Bearer <token>` *or*
+///     `?token=<token>` (so the bearer-header path keeps working for
+///     any client that can stamp it).
+pub fn is_public_path(path: &str) -> bool {
+    if !path.starts_with("/api/v1/") && path != "/api/v1" {
+        return true;
+    }
+    if matches!(path, "/api/v1" | "/api/v1/health" | "/api/v1/auth/login" | "/api/v1/ws") {
+        return true;
+    }
+    // M2.7c: media-stream is the only "templated" public path. Match
+    // the literal `/api/v1/projects/{project_id}/media/{filename}`
+    // shape so the per-route `query_token_fallback` middleware gets
+    // first crack at authenticating. The path is normalised (no
+    // trailing slash, no query string) by axum before this fires.
+    is_media_stream_path(path)
 }
 
-fn unauthorized(msg: &str) -> Response {
+/// True for `/api/v1/projects/{project_id}/media/{filename}`. Walks
+/// the path segments with an iterator (no allocation) and checks the
+/// literal `projects` / `media` markers and a non-empty `{project_id}`
+/// / `{filename}`. The path is component-validated by the time the
+/// layer runs, so a manual split is easy to audit.
+fn is_media_stream_path(path: &str) -> bool {
+    let mut segs = path.split('/');
+    matches!(segs.next(), Some(""))
+        && segs.next() == Some("api")
+        && segs.next() == Some("v1")
+        && segs.next() == Some("projects")
+        && segs.next().is_some_and(|s| !s.is_empty())
+        && segs.next() == Some("media")
+        && segs.next().is_some_and(|s| !s.is_empty())
+        && segs.next().is_none()
+}
+
+/// 401 with the standard `{"ok":false,"error":...}` envelope. Public so
+/// `main.rs`'s M2.7c `query_token_fallback` middleware can return the
+/// exact same body as `auth_layer` does for the bearer-header path.
+pub fn unauthorized(msg: &str) -> Response {
     // Mirror `ServerError::BadRequest` style: 401 + {"ok":false,"error":...}.
     // We return the JSON directly so the `auth_layer` middleware does not
     // need to depend on `ServerError`'s `IntoResponse`.

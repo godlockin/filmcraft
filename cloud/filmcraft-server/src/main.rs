@@ -35,10 +35,10 @@ use axum::Json;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::DefaultBodyLimit;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query, Request, State};
 use axum::http::StatusCode;
 use axum::http::header::CONTENT_TYPE;
-use axum::middleware::from_fn;
+use axum::middleware::{Next, from_fn};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{MethodRouter, delete, get, post};
 use filmcraft_engine::Services;
@@ -223,7 +223,23 @@ async fn try_main() -> Result<()> {
         .route("/api/v1/projects/{project_id}/media", get(filmcraft_server::api::list_media))
         // Stream an individual media file with Range (M1.7). The upload
         // route is the same path; axum distinguishes methods.
-        .route("/api/v1/projects/{project_id}/media/{filename}", get(filmcraft_server::api::media::stream_media))
+        //
+        // M2.7c: layered with `query_token_fallback` so a `<video src>`
+        // carrying `?token=<token>` can play without an `Authorization`
+        // header (browsers don't let `<video>` set custom headers). The
+        // router-wide `auth_layer` still handles the bearer-header path;
+        // this fallback only runs when `CurrentUser` is not already in
+        // the request extensions, so authenticated users keep their
+        // existing behaviour. The auth store is supplied through
+        // `from_fn_with_state` so the middleware can `State`-extract it
+        // (axum's plain `from_fn` doesn't support the `State` extractor).
+        .route(
+            "/api/v1/projects/{project_id}/media/{filename}",
+            get(filmcraft_server::api::media::stream_media).layer({
+                let auth = state.auth.clone();
+                axum::middleware::from_fn_with_state(auth, query_token_fallback)
+            }),
+        )
         .route("/api/v1/projects/{project_id}/export", get(filmcraft_server::api::export_info))
         .route("/api/v1/projects/{project_id}/export.fcproj", get(filmcraft_server::api::download_project))
         // Raw `.fcproj` for in-process consumers (M2.1). Same payload as the
@@ -433,6 +449,83 @@ struct WsQuery {
     token: Option<String>,
 }
 
+/// M2.7c: `?token=` query parameter on the media-stream endpoint. Browsers
+/// can't stamp an `Authorization` header on a `<video src>`, so we accept
+/// the same query-token fallback the WS handshake already uses. The
+/// `auth_layer` middleware still handles the bearer-header path; this
+/// extractor only feeds the `query_token_fallback` middleware below.
+#[derive(Debug, Deserialize)]
+struct MediaQuery {
+    #[serde(default)]
+    token: Option<String>,
+}
+
+/// M2.7c: per-route middleware that accepts `?token=<token>` as an
+/// alternative to `Authorization: Bearer <token>` for the media-stream
+/// endpoint. Browsers attach custom headers to fetch / XHR but not to
+/// `<video src>`, so the HTML video element can't carry the bearer token
+/// any other way.
+///
+/// The route is whitelisted in `auth::is_public_path` so the
+/// router-wide `auth_layer` skips it — auth for this endpoint is
+/// handled entirely by `query_token_fallback`, which accepts either
+/// an `Authorization: Bearer <token>` header or a `?token=<token>`
+/// query parameter. Both paths run the same `AuthStore::resolve`
+/// lookup; a missing or invalid token is a 401 with the same
+/// `unauthorized()` body the layer would have produced, so clients
+/// see no behaviour change for the authenticated path.
+async fn query_token_fallback(
+    State(store): State<Arc<dyn filmcraft_server::auth::AuthStore>>,
+    Query(q): Query<MediaQuery>,
+    req: Request,
+    next: Next,
+) -> Response {
+    use axum::http::header::AUTHORIZATION;
+    // If a previous middleware (e.g. the router-wide `auth_layer`, if
+    // the route is ever re-classified as protected) already populated
+    // `CurrentUser`, trust it. Cheaper than re-resolving the same
+    // token, and future-proofs against layer-order changes.
+    if req.extensions().get::<filmcraft_server::auth::CurrentUser>().is_some() {
+        return next.run(req).await;
+    }
+    // Try the standard `Authorization: Bearer <token>` header first so
+    // clients that *can* stamp it keep working with no change.
+    if let Some(token) = req
+        .headers()
+        .get(AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .map(|t| filmcraft_server::auth::SessionToken(t.to_string()))
+    {
+        return authenticate_or_unauthorized(store, req, next, token, "invalid or expired token").await;
+    }
+    // Fall back to `?token=<token>` from the URL.
+    let Some(raw) = q.token.as_deref() else {
+        return filmcraft_server::auth::unauthorized("missing or invalid token");
+    };
+    let token = filmcraft_server::auth::SessionToken(raw.to_string());
+    authenticate_or_unauthorized(store, req, next, token, "invalid or expired token").await
+}
+
+/// Resolve `token` against `store`; on success attach `CurrentUser` to
+/// the request and forward to the next handler, otherwise return a
+/// 401 with `unauthorized_msg`. Single shared body so the
+/// header-path and the query-token path in `query_token_fallback`
+/// don't repeat the `resolve` + `extensions_mut` dance.
+async fn authenticate_or_unauthorized(
+    store: Arc<dyn filmcraft_server::auth::AuthStore>,
+    mut req: Request,
+    next: Next,
+    token: filmcraft_server::auth::SessionToken,
+    unauthorized_msg: &'static str,
+) -> Response {
+    let Some(uid) = store.resolve(&token).await else {
+        return filmcraft_server::auth::unauthorized(unauthorized_msg);
+    };
+    req.extensions_mut().insert(filmcraft_server::auth::CurrentUser { user_id: uid, token });
+    next.run(req).await
+}
+
 /// WebSocket upgrade handler. Hands the upgraded socket to the WS bridge,
 /// which then runs the control protocol against `SessionManager`.
 ///
@@ -580,7 +673,19 @@ mod tests {
                 post(filmcraft_server::api::upload_media).layer(DefaultBodyLimit::max(filmcraft_server::api::MAX_UPLOAD_BYTES)),
             )
             .route("/api/v1/projects/{project_id}/media", get(filmcraft_server::api::list_media))
-            .route("/api/v1/projects/{project_id}/media/{filename}", get(filmcraft_server::api::media::stream_media))
+            // M2.7c: see the production router — the media-stream route
+            // also accepts `?token=<token>` so the test for the
+            // query-token path can hit the same handler the browser
+            // `<video>` element will hit. The auth store is supplied
+            // through `from_fn_with_state` (mirroring the production
+            // wiring).
+            .route(
+                "/api/v1/projects/{project_id}/media/{filename}",
+                get(filmcraft_server::api::media::stream_media).layer({
+                    let auth = state.auth.clone();
+                    axum::middleware::from_fn_with_state(auth, query_token_fallback)
+                }),
+            )
             .route("/api/v1/projects/{project_id}/export", get(filmcraft_server::api::export_info))
             .route("/api/v1/projects/{project_id}/export.fcproj", get(filmcraft_server::api::download_project))
             .route("/api/v1/projects/{project_id}/fcproj", get(filmcraft_server::api::get_fcproj))
@@ -1006,6 +1111,72 @@ mod tests {
         assert_eq!(cr, "bytes 4-11/32");
         let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
         assert_eq!(&bytes[..], &body[4..12]);
+    }
+
+    /// M2.7c: `?token=<valid>` on the media-stream URL lets `<video src>`
+    /// play without an `Authorization` header (browsers can't stamp
+    /// custom headers on media element requests). The response must be
+    /// a normal 200 with `video/*` and `accept-ranges: bytes`, the
+    /// same body the bearer-header path returns.
+    #[tokio::test]
+    async fn media_stream_accepts_query_token_when_header_missing() {
+        let state = test_state();
+        let token = login(app(state.clone())).await;
+        // Seed an MP4-shaped file so the existing sniff path is happy
+        // (mirrors `media_stream_returns_video_content_type_and_accept_ranges`).
+        let mut body = vec![0u8; 32];
+        body[4..8].copy_from_slice(b"ftyp");
+        body[8..12].copy_from_slice(b"isom");
+        let resp = app(state.clone())
+            .oneshot(with_auth(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/projects/demo/media")
+                    .header("x-filename", "clip.mp4")
+                    .header("content-type", "video/mp4")
+                    .body(Body::from(body))
+                    .unwrap(),
+                &token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        // No `Authorization` header — only `?token=...`. URL-encode the
+        // value so any future token chars don't accidentally break the
+        // request. Same shape the SPA sends from `streamUrl()` in
+        // M2.7c's client change.
+        let resp = app(state)
+            .oneshot(Request::builder().uri(format!("/api/v1/projects/demo/media/clip.mp4?token={token}")).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "valid ?token= must let media stream without Authorization");
+        let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+        assert!(ct.starts_with("video/"), "expected video/* content type, got {ct}");
+        assert_eq!(resp.headers().get("accept-ranges").unwrap().to_str().unwrap(), "bytes");
+    }
+
+    /// M2.7c: a request with neither `Authorization` nor `?token=`
+    /// must still be rejected with 401 — no regression on the
+    /// existing `auth_layer` policy.
+    #[tokio::test]
+    async fn media_stream_rejects_missing_query_token_and_header() {
+        let router = app(test_state());
+        let resp = router.oneshot(Request::builder().uri("/api/v1/projects/demo/media/clip.mp4").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "no auth at all must yield 401");
+    }
+
+    /// M2.7c: a `?token=` value the auth store has never issued must
+    /// be rejected with 401 (mirrors `validate_ws_token`'s policy
+    /// for the WS handshake).
+    #[tokio::test]
+    async fn media_stream_rejects_invalid_query_token() {
+        let router = app(test_state());
+        let resp = router
+            .oneshot(Request::builder().uri("/api/v1/projects/demo/media/clip.mp4?token=deadbeef-dead-beef-dead-beefdeadbeef").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "garbage ?token= must yield 401");
     }
 
     /// M2.1: WS upgrade is rejected at the HTTP layer (400) when the
