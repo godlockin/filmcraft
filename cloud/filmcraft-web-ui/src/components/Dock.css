@@ -1,0 +1,98 @@
+/**
+ * CSS-Grid dock (M3.3).
+ *
+ * Three columns (Project / Monitors / right-panel slot) and two
+ * rows (sources / timeline) with 4px gutters. Heights and widths
+ * are derived from `theme.css` so the dock fills the area between
+ * header and status bar.
+ */
+
+.dock-root {
+  display: grid;
+  grid-template-columns: 280px 1fr 280px;
+  grid-template-rows: minmax(0, 1fr) minmax(0, 2fr);
+  gap: var(--gap);
+  height: 100%;
+  min-height: 0;
+  padding: var(--gap);
+  background: var(--app-bg);
+}
+
+.dock-region {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+
+.dock-tl {
+  grid-column: 1;
+  grid-row: 1;
+}
+.dock-tc {
+  grid-column: 2;
+  grid-row: 1;
+}
+.dock-tr {
+  grid-column: 3;
+  grid-row: 1;
+}
+.dock-b {
+  grid-column: 1 / -1;
+  grid-row: 2;
+}
+
+.dock-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  height: 100%;
+  min-height: 0;
+}
+
+/* M3.11: optional-panel picker. Mounted as a single-row strip that
+   spans the top row's grid columns 1–3, above the timeline. Doesn't
+   claim vertical space: clicking a button mounts its panel inside
+   the `dock-tr` flex stack. */
+.dock-extra {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  align-self: start;
+  justify-self: stretch;
+  position: relative;
+  height: 28px;
+  pointer-events: none;
+}
+.dock-extra > .dock-extra-bar {
+  pointer-events: auto;
+  display: flex;
+  gap: 4px;
+  padding: 4px 8px;
+  background: var(--header-bg);
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-sm);
+  margin-bottom: 4px;
+  margin-left: 292px;
+  margin-right: 292px;
+  height: 28px;
+  align-items: center;
+  font-size: var(--small-size);
+  color: var(--text-dim);
+}
+.dock-extra-btn {
+  background: var(--field-bg);
+  border: 1px solid var(--field-border);
+  color: var(--text-dim);
+  padding: 2px 8px;
+  font-size: var(--small-size);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.dock-extra-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.dock-extra-btn.is-on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}

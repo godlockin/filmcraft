@@ -1,0 +1,11 @@
+/**
+ * Single global CSS entry point (M3.1).
+ *
+ * `main.tsx` imports this once and that pulls in the Premiere 26
+ * tokens (`theme.css`) plus the layout shell (`app.css`). Per-
+ * component stylesheets live next to their `.tsx` and are imported
+ * by the component itself.
+ */
+
+@import "./theme.css";
+@import "./app.css";

@@ -1,0 +1,144 @@
+/**
+ * Premiere 26 dark header (M3.2).
+ *
+ * 38px tall, three flex regions; the centre mode tabs use 2px
+ * `var(--focus)` under-bars on the active tab. Colours and
+ * dimensions come from `theme.css`.
+ */
+
+.app-header {
+  height: var(--header-h);
+  background: var(--header-bg);
+  color: var(--text);
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--separator);
+  font-size: var(--body-size);
+}
+
+.app-header-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  justify-self: start;
+}
+
+.app-brand {
+  font-size: var(--heading-size);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.app-workspace {
+  background: var(--field-bg);
+  border: 1px solid var(--field-border);
+  border-radius: var(--radius-sm);
+  padding: 2px 8px;
+  color: var(--text-dim);
+}
+
+.app-workspace-button {
+  cursor: pointer;
+  font: inherit;
+  color: var(--text-dim);
+}
+.app-workspace-button:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+
+.app-header-modes {
+  display: inline-flex;
+  gap: 0;
+  justify-self: center;
+  align-items: stretch;
+  height: var(--tab-h);
+}
+
+.app-mode-tab {
+  appearance: none;
+  background: transparent;
+  border: none;
+  color: var(--tab-text);
+  padding: 0 16px;
+  height: var(--tab-h);
+  font-size: var(--body-size);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+}
+.app-mode-tab:hover:not(.is-active) {
+  color: var(--tab-text-active);
+  background: var(--hover);
+}
+.app-mode-tab.is-active {
+  color: var(--tab-text-active);
+  border-bottom-color: var(--focus);
+}
+
+.app-header-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  justify-self: end;
+}
+
+.app-quick-export {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: white;
+  padding: 2px 10px;
+  border-radius: var(--radius-sm);
+  font-size: var(--small-size);
+  cursor: pointer;
+}
+.app-quick-export:hover {
+  background: var(--focus);
+}
+
+.app-window-menu {
+  background: var(--hover);
+  border: 1px solid var(--field-border);
+  color: var(--text-dim);
+  padding: 2px 10px;
+  border-radius: var(--radius-sm);
+  font-size: var(--small-size);
+  cursor: pointer;
+}
+.app-window-menu:hover {
+  background: var(--pressed);
+  color: var(--text);
+}
+
+.app-user {
+  color: var(--text-dim);
+  font-size: var(--small-size);
+  padding: 0 6px;
+}
+
+.conn-badge {
+  font-size: var(--small-size);
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  font-weight: 500;
+  background: var(--field-bg);
+  color: var(--text-dim);
+  border: 1px solid var(--field-border);
+}
+.conn-badge.conn-open {
+  color: var(--text);
+  border-color: var(--render-green);
+}
+.conn-badge.conn-connecting {
+  color: var(--render-yellow);
+  border-color: var(--render-yellow);
+}
+.conn-badge.conn-closed {
+  color: var(--text-faint);
+}
+.conn-badge.conn-fatal {
+  color: var(--render-red);
+  border-color: var(--render-red);
+}

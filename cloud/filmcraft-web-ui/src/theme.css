@@ -1,0 +1,74 @@
+/**
+ * FilmCraft web UI — Premiere 26 "Darkest" design tokens.
+ *
+ * Hand-ported from `crates/ui-egui/src/theme.rs` so the cloud UI and
+ * the desktop renderer share the same colour vocabulary. Variable
+ * names mirror the Rust `Tokens` field names line-for-line so the two
+ * files can be diffed token-by-token; everything that ships on the
+ * web UI uses these via `var(--name)`.
+ *
+ * The values below are the `ThemeKind::Dark` arm of `Tokens::for_kind`
+ * (plan/premiere/02-ui-ux.md §1) plus the dimensions used by the M3
+ * milestone panels: `--header-h 38px`, `--tab-h 32px`, `--status-h
+ * 24px`, `--gap 4px`, `--radius-sm 4px`.
+ */
+
+:root {
+  /* ----- colours (mirror `Tokens` fields in `theme.rs:104-148`) ----- */
+  --app-bg: #000000;
+  --header-bg: #1d1d1d;
+  --panel-bg: #1d1d1d;
+  --tab-bg: #1d1d1d;
+  --tab-text: #b0b0b0;
+  --tab-text-active: #d1d1d1;
+  --focus: #5794ec;
+  --accent: #2f6bdf;
+  --accent-hover: #3f7ce8;
+  --text: #d1d1d1;
+  --text-dim: #b0b0b0;
+  --text-faint: #6e6e6e;
+  --icon: #b0b0b0;
+  --icon-active: #d1d1d1;
+  --hover: #2c2c2c;
+  --pressed: #4b4b4b;
+  --field-bg: #0e0e0e;
+  --field-border: #303030;
+  --separator: #303030;
+  --row-alt: #212121;
+  --row-selected: #333333;
+  --hot-text: #4096f3;
+
+  /* timeline */
+  --tl-bg: #1d1d1d;
+  --tl-track-bg: #1d1d1d;
+  --tl-track-bg-alt: #1d1d1d;
+  --tl-header-bg: #1d1d1d;
+  --tl-ruler-bg: #1d1d1d;
+  --tl-ruler-tick: #8d8d8d;
+  --tl-ruler-text: #b0b0b0;
+  --playhead: #5895ec;
+  --in-out-shade: #3f3f3f;
+  --clip-selected-border: #ebebeb;
+
+  /* render state */
+  --render-red: #e34850;
+  --render-yellow: #f0f04f;
+  --render-green: #2d9d78;
+
+  /* monitor */
+  --monitor-bg: #1d1d1d;
+  --timecode: #4096f3;
+
+  /* danger */
+  --danger: #dc513d;
+
+  /* ----- dimensions ----- */
+  --radius-sm: 4px;
+  --gap: 4px;
+  --tab-h: 32px;
+  --header-h: 38px;
+  --status-h: 24px;
+  --body-size: 12px;
+  --small-size: 11px;
+  --heading-size: 15px;
+}

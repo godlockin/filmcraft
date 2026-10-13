@@ -1,0 +1,47 @@
+/**
+ * Panel frame (M3.3) — title strip plus body. Used by every dock
+ * panel. Colours come from `theme.css`.
+ */
+
+.panel-frame {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--panel-bg);
+  border: 1px solid var(--field-border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.panel-frame-title {
+  height: var(--tab-h);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px;
+  background: var(--tab-bg);
+  border-bottom: 1px solid var(--separator);
+  color: var(--text);
+  font-size: var(--body-size);
+  font-weight: 500;
+  flex: 0 0 auto;
+}
+
+.panel-frame-title-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.panel-frame-title-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.panel-frame-body {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 6px 8px;
+}
