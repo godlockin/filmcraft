@@ -2254,6 +2254,7 @@ dependencies = [
 name = "filmcraft-server"
 version = "0.2.1"
 dependencies = [
+ "async-trait",
  "axum",
  "filmcraft-engine",
  "filmcraft-format",

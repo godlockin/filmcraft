@@ -24,6 +24,12 @@ pub enum ServerError {
     /// An internal error we did not expect. Logged at `error!`, never exposed
     /// verbatim to the client.
     Internal(String),
+    /// M2.6: the caller is not authenticated, or their credentials are
+    /// invalid. `auth_layer` builds its 401 response directly (it has to
+    /// short-circuit before any handler runs), so this variant is here
+    /// for future handlers that want to use `?` chaining instead of
+    /// returning `Response` by hand.
+    Unauthorized(String),
 }
 
 impl std::fmt::Display for ServerError {
@@ -34,6 +40,7 @@ impl std::fmt::Display for ServerError {
             Self::NotFound(s) => write!(f, "not found: {s}"),
             Self::Engine(s) => write!(f, "engine: {s}"),
             Self::Internal(s) => write!(f, "internal error: {s}"),
+            Self::Unauthorized(s) => write!(f, "unauthorized: {s}"),
         }
     }
 }
@@ -59,6 +66,7 @@ impl ServerError {
             },
             Self::Engine(_) => StatusCode::UNPROCESSABLE_ENTITY,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::Unauthorized(_) => StatusCode::UNAUTHORIZED,
         }
     }
 }

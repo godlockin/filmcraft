@@ -5,6 +5,7 @@
 //! filesystem for Aliyun OSS in M1.3b is a one-line change.
 
 pub mod api;
+pub mod auth;
 pub mod error;
 pub mod services;
 pub mod session;

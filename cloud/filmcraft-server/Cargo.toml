@@ -29,6 +29,11 @@ tower-http = { version = "0.6", features = ["trace", "cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { workspace = true }
+# M2.6: `AuthStore` is an async trait so a future `DbAuthStore` can do
+# real I/O without changing the handler signatures. `async-trait` is
+# the simplest stable implementation; the rest of the workspace doesn't
+# need it.
+async-trait = "0.1"
 
 [dev-dependencies]
 # WS round-trip integration tests. Pinned to the same version the workspace

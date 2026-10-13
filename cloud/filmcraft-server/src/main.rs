@@ -116,11 +116,25 @@ struct AppState {
     services: Arc<OssServices>,
     sessions: Arc<filmcraft_server::SessionManager>,
     api_state: filmcraft_server::api::ApiState,
+    /// M2.6: the auth backend. The HTTP layer resolves bearer tokens
+    /// against it via `auth_layer`. Production wires up
+    /// `HardcodedAuthStore`; tests wire up their own (so a "missing
+    /// token" path is exercised independently of the admin password).
+    auth: Arc<dyn filmcraft_server::auth::AuthStore>,
 }
 
 impl axum::extract::FromRef<AppState> for filmcraft_server::api::ApiState {
     fn from_ref(s: &AppState) -> Self {
         s.api_state.clone()
+    }
+}
+
+// M2.6: bridge `Arc<dyn AuthStore>` out of `AppState` so the auth
+// handlers can declare `State<Arc<dyn AuthStore>>` exactly the way they
+// would when the router was parameterised on the auth store directly.
+impl axum::extract::FromRef<AppState> for Arc<dyn filmcraft_server::auth::AuthStore> {
+    fn from_ref(s: &AppState) -> Self {
+        Arc::clone(&s.auth)
     }
 }
 
@@ -151,7 +165,13 @@ async fn try_main() -> Result<()> {
     let sessions = Arc::new(filmcraft_server::SessionManager::new(Arc::clone(&services)));
     let user_id = anonymous_user();
     let api_state = filmcraft_server::api::ApiState::new(Arc::clone(&services), user_id);
-    let state = AppState { started_at: std::time::Instant::now(), services, sessions, api_state };
+    // M2.6: hardcoded admin auth (admin / 123456 by default; override
+    // with `FILMCRAFT_ADMIN_PASSWORD`). Upgrade path: swap
+    // `HardcodedAuthStore::shared(...)` for `DbAuthStore::shared(...)`
+    // (or similar) when a real user table lands — the trait object
+    // here is the only line that changes.
+    let auth = filmcraft_server::auth::HardcodedAuthStore::shared(filmcraft_server::auth::resolve_admin_password());
+    let state = AppState { started_at: std::time::Instant::now(), services, sessions, api_state, auth };
 
     let web_ui_dir = resolve_web_ui_dir();
 
@@ -182,6 +202,11 @@ async fn try_main() -> Result<()> {
         // (SPA fallback serves `index.html` for the React UI).
         .route("/api/v1", get(api_doc_handler))
         .route("/api/v1/health", get(health_handler))
+        // M2.6: auth surface. `/auth/login` is public (it's where you
+        // GET the token); `/auth/me` and `/auth/logout` are protected.
+        .route("/api/v1/auth/login", post(filmcraft_server::auth::login_handler))
+        .route("/api/v1/auth/me", get(filmcraft_server::auth::me_handler))
+        .route("/api/v1/auth/logout", post(filmcraft_server::auth::logout_handler))
         .route("/api/v1/store/{*key}", get(store_get).put(store_put))
         .route("/api/v1/ws", get(ws_upgrade))
         // Project CRUD (M1.7). `GET /api/v1/projects` and the `POST` variant
@@ -233,6 +258,19 @@ async fn try_main() -> Result<()> {
         // not produce an event of its own, so the TraceLayer HTTP access
         // log is the natural place to see the id).
         .layer(from_fn(request_id_layer))
+        // M2.6: bearer-token auth. Inline `from_fn` capturing the auth
+        // store — sidesteps axum's `from_fn_with_state` (which has
+        // trouble with `Arc<dyn Trait>` as state because of auto-trait
+        // bounds). Public routes (login + health + manifest + SPA + WS)
+        // skip the check; everything else needs
+        // `Authorization: Bearer <token>`.
+        .layer(from_fn({
+            let store = state.auth.clone();
+            move |req, next| {
+                let store = Arc::clone(&store);
+                filmcraft_server::auth::run_auth_layer(store, req, next)
+            }
+        }))
         .with_state(state);
 
     let listener = TcpListener::bind(&listen_addr).await.map_err(|e| ServerError::Internal(format!("failed to bind {listen_addr}: {e}")))?;
@@ -399,12 +437,20 @@ struct WsQuery {
 /// rather than a silently-rewritten key.
 ///
 /// No authentication yet: every connection is treated as the placeholder
-/// `UserId::new("anonymous")`. M2 (auth) will replace this.
+/// `UserId::new("anonymous")`. M2.6 wires the HTTP bearer-token path
+/// (`auth_layer` + `/auth/login`); the WS upgrade is deliberately still
+/// anonymous because browsers can't easily attach `Authorization`
+/// headers to a WS handshake. M2.7 will replace the `UserId::new`
+/// call below with one that reads `?token=...` and goes through
+/// `auth::validate_ws_token(...)`.
 async fn ws_upgrade(State(state): State<AppState>, Query(q): Query<WsQuery>, ws: axum::extract::ws::WebSocketUpgrade) -> Result<axum::response::Response> {
     let Some(project_id) = q.project_id else {
         return Err(ServerError::BadRequest("missing `project_id` query parameter".into()));
     };
     filmcraft_server::api::validate_component("project_id", &project_id)?;
+    // M2.6 placeholder: `auth::validate_ws_token` is wired in M2.7
+    // (returns `None` for now; same effect as the previous "always
+    // anonymous" behaviour).
     let key = ProjectKey::new(ANONYMOUS_USER_ID, project_id);
     let mgr = Arc::clone(&state.sessions);
     Ok(ws.on_upgrade(move |socket| async move {
@@ -451,7 +497,11 @@ mod tests {
         let services = Arc::new(OssServices::new(root));
         let sessions = Arc::new(filmcraft_server::SessionManager::new(Arc::clone(&services)));
         let api_state = filmcraft_server::api::ApiState::new(Arc::clone(&services), filmcraft_server::UserId::new("test"));
-        AppState { started_at: std::time::Instant::now(), services, sessions, api_state }
+        // M2.6: tests share a fresh `HardcodedAuthStore` per `test_state()`
+        // call. The password is a known constant so the login tests can
+        // pin `admin / test-pw`; production uses `FILMCRAFT_ADMIN_PASSWORD`.
+        let auth = filmcraft_server::auth::HardcodedAuthStore::shared("test-pw".to_string());
+        AppState { started_at: std::time::Instant::now(), services, sessions, api_state, auth }
     }
 
     /// Per-test unique tag so two tests run in parallel don't share a temp dir.
@@ -463,10 +513,57 @@ mod tests {
         format!("t{n}")
     }
 
+    /// M2.6 helper: log in as the test admin and return the issued
+    /// session token. `Router` is `Clone` in axum 0.8, so callers can
+    /// share a single router between login + the actual test request,
+    /// or build a fresh one per request. Typical pattern:
+    ///
+    /// ```ignore
+    /// let state = test_state();
+    /// let token = login(app(state.clone())).await;
+    /// let resp = app(state).oneshot(with_auth(req, &token)).await.unwrap();
+    /// ```
+    async fn login(router: Router) -> String {
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"username":"admin","password":"test-pw"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "test login must succeed");
+        let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let j: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        j["token"].as_str().unwrap().to_string()
+    }
+
+    /// M2.6 helper: stamp `Authorization: Bearer <token>` on a request
+    /// before passing it through `oneshot`. The auth layer requires a
+    /// valid token on every protected route, and retrofitting every
+    /// existing test to manually add the header would be far noisier
+    /// than this one-call wrapper.
+    fn with_auth(req: Request<Body>, token: &str) -> Request<Body> {
+        // `Request` doesn't expose a `headers_mut` getter that returns
+        // `&mut HeaderMap` directly without going through a `Parts`
+        // split. Do the split / merge dance.
+        let (mut parts, body) = req.into_parts();
+        parts.headers.insert(axum::http::header::AUTHORIZATION, format!("Bearer {token}").parse().unwrap());
+        Request::from_parts(parts, body)
+    }
+
     fn app(state: AppState) -> Router {
         Router::new()
             .route("/api/v1", get(api_doc_handler))
             .route("/api/v1/health", get(health_handler))
+            // M2.6: auth surface mirrors production (so per-test
+            // integration hits the same wiring).
+            .route("/api/v1/auth/login", post(filmcraft_server::auth::login_handler))
+            .route("/api/v1/auth/me", get(filmcraft_server::auth::me_handler))
+            .route("/api/v1/auth/logout", post(filmcraft_server::auth::logout_handler))
             .route("/api/v1/store/{*key}", get(store_get).put(store_put))
             .route("/api/v1/ws", get(ws_upgrade))
             .route("/api/v1/projects", get(filmcraft_server::api::projects::list_projects).post(filmcraft_server::api::projects::create_project))
@@ -493,13 +590,26 @@ mod tests {
             .route("/api/v1/projects/{project_id}/history/{rev}", get(filmcraft_server::api::versioning::read_history))
             .layer(TraceLayer::new_for_http())
             .layer(from_fn(request_id_layer))
+            // M2.6: bearer-token auth, same as production. Tests can
+            // bypass it by sending `Authorization: Bearer <login-token>`
+            // — `test_state()` hands back a store that knows
+            // `admin / test-pw`. Inline `from_fn` closure capturing
+            // the store; matches the production wiring exactly.
+            .layer(from_fn({
+                let store = state.auth.clone();
+                move |req, next| {
+                    let store = Arc::clone(&store);
+                    filmcraft_server::auth::run_auth_layer(store, req, next)
+                }
+            }))
             .with_state(state)
     }
 
     #[tokio::test]
     async fn api_doc_returns_endpoint_manifest() {
         // M1.7 follow-up: `/` is owned by the SPA fallback, so the API
-        // manifest itself moved to `GET /api/v1`.
+        // manifest itself moved to `GET /api/v1`. `/api/v1` is public,
+        // so no auth needed.
         let resp = app(test_state()).oneshot(Request::builder().uri("/api/v1").body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let bytes = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
@@ -522,6 +632,7 @@ mod tests {
 
     #[tokio::test]
     async fn health_returns_200() {
+        // M2.6: `/api/v1/health` is public — no auth required.
         let resp = app(test_state()).oneshot(Request::builder().uri("/api/v1/health").body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
     }
@@ -529,15 +640,20 @@ mod tests {
     #[tokio::test]
     async fn store_put_then_get_round_trip() {
         // PUT then GET against the SAME state, otherwise the two requests
-        // would land in two different temp dirs.
+        // would land in two different temp dirs. M2.6: both calls
+        // carry a bearer token now (the store route is protected).
         let state = test_state();
+        // Two routers share the same `AppState`. Each `oneshot` consumes
+        // its router, so we build one per request.
+        let token = login(app(state.clone())).await;
         let resp = app(state.clone())
-            .oneshot(Request::builder().method("PUT").uri("/api/v1/store/users/u/p/c.fcproj").body(Body::from("hello m1.3")).unwrap())
+            .oneshot(with_auth(Request::builder().method("PUT").uri("/api/v1/store/users/u/p/c.fcproj").body(Body::from("hello m1.3")).unwrap(), &token))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
-        let resp = app(state).oneshot(Request::builder().uri("/api/v1/store/users/u/p/c.fcproj").body(Body::empty()).unwrap()).await.unwrap();
+        let resp =
+            app(state).oneshot(with_auth(Request::builder().uri("/api/v1/store/users/u/p/c.fcproj").body(Body::empty()).unwrap(), &token)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
         assert_eq!(&bytes[..], b"hello m1.3");
@@ -545,14 +661,21 @@ mod tests {
 
     #[tokio::test]
     async fn store_get_missing_returns_404() {
-        let resp = app(test_state()).oneshot(Request::builder().uri("/api/v1/store/does-not-exist").body(Body::empty()).unwrap()).await.unwrap();
+        // M2.6: store routes are protected — auth header required.
+        let router = app(test_state());
+        let token = login(router.clone()).await;
+        let resp = router.oneshot(with_auth(Request::builder().uri("/api/v1/store/does-not-exist").body(Body::empty()).unwrap(), &token)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
     async fn store_rejects_traversal() {
         // `..` must be rejected by the path policy in OssServices.
-        let resp = app(test_state()).oneshot(Request::builder().uri("/api/v1/store/../etc/passwd").body(Body::empty()).unwrap()).await.unwrap();
+        // M2.6: protected route — send a token so the auth layer lets
+        // the request reach the validator.
+        let router = app(test_state());
+        let token = login(router.clone()).await;
+        let resp = router.oneshot(with_auth(Request::builder().uri("/api/v1/store/../etc/passwd").body(Body::empty()).unwrap(), &token)).await.unwrap();
         // axum may reject the URI at parse time, or the handler may see it
         // and return 400. Either is fine; 200 is the only forbidden outcome.
         assert_ne!(resp.status(), StatusCode::OK, "traversal must not succeed");
@@ -563,8 +686,9 @@ mod tests {
         // M1.6 acceptance: POST a (fake) mp4 to a project's media dir, GET
         // the listing, then GET the project's current.fcproj download.
         // We use the same `state` across all three requests so they share
-        // the OSS root.
+        // the OSS root. M2.6: every call now carries a bearer token.
         let state = test_state();
+        let token = login(app(state.clone())).await;
 
         // 1. Upload. Build an MP4-shaped body (ftyp box) so the sniff
         //    accepts it.
@@ -573,7 +697,7 @@ mod tests {
         body[8..12].copy_from_slice(b"isom");
 
         let resp = app(state.clone())
-            .oneshot(
+            .oneshot(with_auth(
                 Request::builder()
                     .method("POST")
                     .uri("/api/v1/projects/demo/media")
@@ -581,7 +705,8 @@ mod tests {
                     .header("content-type", "video/mp4")
                     .body(Body::from(body.clone()))
                     .unwrap(),
-            )
+                &token,
+            ))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::CREATED, "upload should be 201, got {}", resp.status());
@@ -592,7 +717,8 @@ mod tests {
         assert_eq!(j["size"], 64);
 
         // 2. List — must include the file we just uploaded.
-        let resp = app(state.clone()).oneshot(Request::builder().uri("/api/v1/projects/demo/media").body(Body::empty()).unwrap()).await.unwrap();
+        let resp =
+            app(state.clone()).oneshot(with_auth(Request::builder().uri("/api/v1/projects/demo/media").body(Body::empty()).unwrap(), &token)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
         let j: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -602,14 +728,16 @@ mod tests {
         // 3. Write a fake .fcproj at current.fcproj, then GET it back.
         let project_blob = b"FCP-JSON-DEMO";
         let resp = app(state.clone())
-            .oneshot(
+            .oneshot(with_auth(
                 Request::builder().method("PUT").uri("/api/v1/store/users/test/projects/demo/current.fcproj").body(Body::from(project_blob.to_vec())).unwrap(),
-            )
+                &token,
+            ))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
-        let resp = app(state.clone()).oneshot(Request::builder().uri("/api/v1/projects/demo/export.fcproj").body(Body::empty()).unwrap()).await.unwrap();
+        let resp =
+            app(state).oneshot(with_auth(Request::builder().uri("/api/v1/projects/demo/export.fcproj").body(Body::empty()).unwrap(), &token)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let cd = resp.headers().get("content-disposition").unwrap().to_str().unwrap().to_string();
         assert!(cd.contains("attachment"), "expected attachment header, got {cd:?}");
@@ -619,15 +747,19 @@ mod tests {
 
     #[tokio::test]
     async fn project_upload_rejects_traversal_in_project_id() {
-        let resp = app(test_state())
-            .oneshot(
+        // M2.6: protected route — token required.
+        let router = app(test_state());
+        let token = login(router.clone()).await;
+        let resp = router
+            .oneshot(with_auth(
                 Request::builder()
                     .method("POST")
                     .uri("/api/v1/projects/..%2Fetc/media")
                     .header("x-filename", "x.mp4")
                     .body(Body::from(b"hello".to_vec()))
                     .unwrap(),
-            )
+                &token,
+            ))
             .await
             .unwrap();
         // axum decodes %2F back to /, which would normally land on the
@@ -639,15 +771,19 @@ mod tests {
 
     #[tokio::test]
     async fn project_upload_rejects_traversal_in_filename() {
-        let resp = app(test_state())
-            .oneshot(
+        // M2.6: protected route — token required.
+        let router = app(test_state());
+        let token = login(router.clone()).await;
+        let resp = router
+            .oneshot(with_auth(
                 Request::builder()
                     .method("POST")
                     .uri("/api/v1/projects/demo/media")
                     .header("x-filename", "../../etc/passwd")
                     .body(Body::from(b"hello".to_vec()))
                     .unwrap(),
-            )
+                &token,
+            ))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -655,14 +791,22 @@ mod tests {
 
     #[tokio::test]
     async fn project_download_missing_returns_404() {
-        let resp =
-            app(test_state()).oneshot(Request::builder().uri("/api/v1/projects/never-existed/export.fcproj").body(Body::empty()).unwrap()).await.unwrap();
+        // M2.6: protected route — token required.
+        let router = app(test_state());
+        let token = login(router.clone()).await;
+        let resp = router
+            .oneshot(with_auth(Request::builder().uri("/api/v1/projects/never-existed/export.fcproj").body(Body::empty()).unwrap(), &token))
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
     async fn project_export_info_returns_fcproj_link() {
-        let resp = app(test_state()).oneshot(Request::builder().uri("/api/v1/projects/demo/export").body(Body::empty()).unwrap()).await.unwrap();
+        // M2.6: protected route — token required.
+        let router = app(test_state());
+        let token = login(router.clone()).await;
+        let resp = router.oneshot(with_auth(Request::builder().uri("/api/v1/projects/demo/export").body(Body::empty()).unwrap(), &token)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
         let j: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -682,17 +826,19 @@ mod tests {
     #[tokio::test]
     async fn project_crud_round_trip() {
         let state = test_state();
+        let token = login(app(state.clone())).await;
 
         // 1. POST creates the project (201 + body has the id).
         let resp = app(state.clone())
-            .oneshot(
+            .oneshot(with_auth(
                 Request::builder()
                     .method("POST")
                     .uri("/api/v1/projects")
                     .header("content-type", "application/json")
                     .body(Body::from(r#"{"id":"alpha","name":"Alpha"}"#))
                     .unwrap(),
-            )
+                &token,
+            ))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::CREATED);
@@ -702,7 +848,7 @@ mod tests {
         assert_eq!(j["project"], "alpha");
 
         // 2. GET lists and includes it.
-        let resp = app(state.clone()).oneshot(Request::builder().uri("/api/v1/projects").body(Body::empty()).unwrap()).await.unwrap();
+        let resp = app(state.clone()).oneshot(with_auth(Request::builder().uri("/api/v1/projects").body(Body::empty()).unwrap(), &token)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
         let j: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -710,11 +856,14 @@ mod tests {
         assert!(projects.iter().any(|v| v["id"] == "alpha"), "alpha not listed: {projects:?}");
 
         // 3. DELETE removes it (204).
-        let resp = app(state.clone()).oneshot(Request::builder().method("DELETE").uri("/api/v1/projects/alpha").body(Body::empty()).unwrap()).await.unwrap();
+        let resp = app(state.clone())
+            .oneshot(with_auth(Request::builder().method("DELETE").uri("/api/v1/projects/alpha").body(Body::empty()).unwrap(), &token))
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
         // 4. GET again — the project is gone.
-        let resp = app(state.clone()).oneshot(Request::builder().uri("/api/v1/projects").body(Body::empty()).unwrap()).await.unwrap();
+        let resp = app(state).oneshot(with_auth(Request::builder().uri("/api/v1/projects").body(Body::empty()).unwrap(), &token)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
         let j: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -724,8 +873,11 @@ mod tests {
 
     #[tokio::test]
     async fn project_create_rejects_traversal_in_id() {
-        let resp = app(test_state())
-            .oneshot(
+        // M2.6: protected route — token required.
+        let router = app(test_state());
+        let token = login(router.clone()).await;
+        let resp = router
+            .oneshot(with_auth(
                 Request::builder()
                     .method("POST")
                     .uri("/api/v1/projects")
@@ -736,7 +888,8 @@ mod tests {
                     // becomes a route-mismatch (404). Either way: not 2xx.
                     .body(Body::from(r#"{"id":"..\\etc"}"#))
                     .unwrap(),
-            )
+                &token,
+            ))
             .await
             .unwrap();
         assert_ne!(resp.status(), StatusCode::OK, "traversal must not succeed");
@@ -747,17 +900,25 @@ mod tests {
     async fn project_create_duplicate_returns_409() {
         // The plan says "409", and our handler returns 400 via
         // `BadRequest(... already exists)`. Either way, not 2xx.
+        // M2.6: protected route — token required.
         let state = test_state();
+        let token = login(app(state.clone())).await;
         let body = r#"{"id":"dup","name":"dup"}"#;
 
         let resp = app(state.clone())
-            .oneshot(Request::builder().method("POST").uri("/api/v1/projects").header("content-type", "application/json").body(Body::from(body)).unwrap())
+            .oneshot(with_auth(
+                Request::builder().method("POST").uri("/api/v1/projects").header("content-type", "application/json").body(Body::from(body)).unwrap(),
+                &token,
+            ))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::CREATED);
 
-        let resp = app(state.clone())
-            .oneshot(Request::builder().method("POST").uri("/api/v1/projects").header("content-type", "application/json").body(Body::from(body)).unwrap())
+        let resp = app(state)
+            .oneshot(with_auth(
+                Request::builder().method("POST").uri("/api/v1/projects").header("content-type", "application/json").body(Body::from(body)).unwrap(),
+                &token,
+            ))
             .await
             .unwrap();
         assert_ne!(resp.status(), StatusCode::CREATED, "second POST must not succeed");
@@ -765,19 +926,24 @@ mod tests {
 
     #[tokio::test]
     async fn project_delete_missing_returns_404() {
-        let resp = app(test_state()).oneshot(Request::builder().method("DELETE").uri("/api/v1/projects/nope").body(Body::empty()).unwrap()).await.unwrap();
+        // M2.6: protected route — token required.
+        let router = app(test_state());
+        let token = login(router.clone()).await;
+        let resp =
+            router.oneshot(with_auth(Request::builder().method("DELETE").uri("/api/v1/projects/nope").body(Body::empty()).unwrap(), &token)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
     async fn media_stream_returns_video_content_type_and_accept_ranges() {
         let state = test_state();
+        let token = login(app(state.clone())).await;
         // First seed an MP4-shaped file by going through the upload endpoint.
         let mut body = vec![0u8; 32];
         body[4..8].copy_from_slice(b"ftyp");
         body[8..12].copy_from_slice(b"isom");
         let resp = app(state.clone())
-            .oneshot(
+            .oneshot(with_auth(
                 Request::builder()
                     .method("POST")
                     .uri("/api/v1/projects/demo/media")
@@ -785,13 +951,15 @@ mod tests {
                     .header("content-type", "video/mp4")
                     .body(Body::from(body))
                     .unwrap(),
-            )
+                &token,
+            ))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::CREATED);
 
         // Now request the stream.
-        let resp = app(state.clone()).oneshot(Request::builder().uri("/api/v1/projects/demo/media/clip.mp4").body(Body::empty()).unwrap()).await.unwrap();
+        let resp =
+            app(state).oneshot(with_auth(Request::builder().uri("/api/v1/projects/demo/media/clip.mp4").body(Body::empty()).unwrap(), &token)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
         assert!(ct.starts_with("video/"), "expected video/* content type, got {ct}");
@@ -801,19 +969,24 @@ mod tests {
     #[tokio::test]
     async fn media_stream_range_request_returns_206() {
         let state = test_state();
+        let token = login(app(state.clone())).await;
         // Seed a 32-byte file with a content body we can slice.
         let body: Vec<u8> = (0u8..=31).collect();
         let resp = app(state.clone())
-            .oneshot(
+            .oneshot(with_auth(
                 Request::builder().method("POST").uri("/api/v1/projects/demo/media").header("x-filename", "raw.bin").body(Body::from(body.clone())).unwrap(),
-            )
+                &token,
+            ))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::CREATED);
 
         // Range: bytes=4-11 (inclusive on the right) → 8 bytes back.
-        let resp = app(state.clone())
-            .oneshot(Request::builder().uri("/api/v1/projects/demo/media/raw.bin").header("range", "bytes=4-11").body(Body::empty()).unwrap())
+        let resp = app(state)
+            .oneshot(with_auth(
+                Request::builder().uri("/api/v1/projects/demo/media/raw.bin").header("range", "bytes=4-11").body(Body::empty()).unwrap(),
+                &token,
+            ))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::PARTIAL_CONTENT, "Range must yield 206");
@@ -826,6 +999,8 @@ mod tests {
     /// M2.1: WS upgrade is rejected at the HTTP layer (400) when the
     /// `?project_id=` query parameter fails `validate_component`. The
     /// socket must never reach `handle_socket` in this case.
+    /// M2.6: `/api/v1/ws` is still anonymous (the WS path is handled
+    /// by `validate_ws_token`, which currently returns `None`).
     #[tokio::test]
     async fn ws_route_rejects_invalid_project_id() {
         let resp = app(test_state()).oneshot(Request::builder().uri("/api/v1/ws?project_id=..%2Fetc").body(Body::empty()).unwrap()).await.unwrap();
@@ -834,6 +1009,7 @@ mod tests {
 
     /// M2.1: WS upgrade is rejected at the HTTP layer (400) when the
     /// `?project_id=` query parameter is missing entirely.
+    /// M2.6: WS path is still anonymous.
     #[tokio::test]
     async fn ws_route_rejects_missing_project_id() {
         let resp = app(test_state()).oneshot(Request::builder().uri("/api/v1/ws").body(Body::empty()).unwrap()).await.unwrap();
@@ -848,22 +1024,24 @@ mod tests {
     #[tokio::test]
     async fn fcproj_endpoint_returns_raw_blob() {
         let state = test_state();
+        let token = login(app(state.clone())).await;
         // Seed the project by POSTing it (M1.7 writes `current.fcproj`).
         let resp = app(state.clone())
-            .oneshot(
+            .oneshot(with_auth(
                 Request::builder()
                     .method("POST")
                     .uri("/api/v1/projects")
                     .header("content-type", "application/json")
                     .body(Body::from(r#"{"id":"raw","name":"Raw"}"#))
                     .unwrap(),
-            )
+                &token,
+            ))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::CREATED);
 
         // Read the raw bytes back and compare.
-        let resp = app(state.clone()).oneshot(Request::builder().uri("/api/v1/projects/raw/fcproj").body(Body::empty()).unwrap()).await.unwrap();
+        let resp = app(state).oneshot(with_auth(Request::builder().uri("/api/v1/projects/raw/fcproj").body(Body::empty()).unwrap(), &token)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
         assert_eq!(ct, "application/octet-stream", "raw endpoint must use octet-stream, got {ct}");
@@ -887,8 +1065,11 @@ mod tests {
         // a project that was created by other means (a real user could
         // construct the dir but not the file) is hard to set up through
         // the HTTP API alone. We test the path by pointing at a project
-        // id that simply doesn't exist.
-        let resp = app(test_state()).oneshot(Request::builder().uri("/api/v1/projects/never-saved/fcproj").body(Body::empty()).unwrap()).await.unwrap();
+        // id that simply doesn't exist. M2.6: protected route — token
+        // required.
+        let router = app(test_state());
+        let token = login(router.clone()).await;
+        let resp = router.oneshot(with_auth(Request::builder().uri("/api/v1/projects/never-saved/fcproj").body(Body::empty()).unwrap(), &token)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND, "missing fcproj must yield 404");
         let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
         let j: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -1082,5 +1263,141 @@ mod tests {
 
         sock_a.close(None).await.unwrap();
         sock_b.close(None).await.unwrap();
+    }
+
+    // ----- M2.6 auth integration tests ---------------------------------
+    //
+    // The acceptance contract for the auth layer:
+    //  - `/api/v1/auth/login` exchanges valid credentials for a bearer
+    //    token; the response carries the user identity in `{id, role}`
+    //    shape (matches what `/auth/me` returns later).
+    //  - Invalid credentials yield 401 with `{ok:false, error:...}`.
+    //  - Protected routes (anything not on the public list) require
+    //    `Authorization: Bearer <token>`; missing → 401, bad token →
+    //    401, valid token → 200.
+    //  - `POST /api/v1/auth/logout` revokes the token; a subsequent
+    //    `/auth/me` with the same token yields 401.
+
+    /// Login + token + user envelope. The admin role is hardcoded for
+    /// M2.6; once a real user table lands the role will come from the
+    /// store, but the JSON shape is fixed.
+    #[tokio::test]
+    async fn auth_login_with_valid_credentials_returns_token() {
+        let resp = app(test_state())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"username":"admin","password":"test-pw"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "valid login must yield 200");
+        let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let j: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(j["ok"], true);
+        assert!(j["token"].as_str().is_some_and(|s| !s.is_empty()), "token must be a non-empty string, got {j}");
+        assert_eq!(j["user"]["id"], "admin");
+        assert_eq!(j["user"]["role"], "admin");
+    }
+
+    /// Wrong password (and wrong username) both yield 401 with a
+    /// generic error — we don't leak which field is wrong.
+    #[tokio::test]
+    async fn auth_login_with_invalid_password_returns_401() {
+        let resp = app(test_state())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"username":"admin","password":"nope"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "wrong password must yield 401");
+        let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let j: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(j["ok"], false);
+        assert!(j["error"].as_str().is_some_and(|s| s.contains("invalid")), "error must mention invalid creds, got {j}");
+    }
+
+    /// `/auth/me` without a token is the canary for "is my session
+    /// alive?" — it must 401 when no `Authorization` header is sent.
+    #[tokio::test]
+    async fn auth_me_without_token_returns_401() {
+        let resp = app(test_state()).oneshot(Request::builder().uri("/api/v1/auth/me").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let j: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(j["ok"], false);
+        assert!(j["error"].as_str().unwrap().contains("Bearer"), "error must mention the missing Bearer header, got {j}");
+    }
+
+    /// `/auth/me` with a valid token returns the admin user. We exercise
+    /// the `Extension<CurrentUser>` extractor end-to-end.
+    #[tokio::test]
+    async fn auth_me_with_valid_token_returns_admin() {
+        let state = test_state();
+        let token = login(app(state.clone())).await;
+        let resp = app(state).oneshot(with_auth(Request::builder().uri("/api/v1/auth/me").body(Body::empty()).unwrap(), &token)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let j: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(j["ok"], true);
+        assert_eq!(j["user"]["id"], "admin");
+        assert_eq!(j["user"]["role"], "admin");
+    }
+
+    /// `/auth/me` with a syntactically valid but unknown token → 401.
+    /// The middleware calls `store.resolve(token)` which returns
+    /// `None` for an unknown UUID.
+    #[tokio::test]
+    async fn auth_me_with_invalid_token_returns_401() {
+        let bogus = "00000000-0000-0000-0000-000000000000";
+        let resp = app(test_state()).oneshot(with_auth(Request::builder().uri("/api/v1/auth/me").body(Body::empty()).unwrap(), bogus)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// A protected route hit without a token must 401 (the route is
+    /// never reached). `GET /api/v1/projects` is a representative
+    /// protected route.
+    #[tokio::test]
+    async fn protected_route_without_token_returns_401() {
+        let resp = app(test_state()).oneshot(Request::builder().uri("/api/v1/projects").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// Same route, valid token → 200. Confirms the auth layer is the
+    /// only thing standing between "no token" and "the actual handler",
+    /// not a regression in the handler itself.
+    #[tokio::test]
+    async fn protected_route_with_valid_token_succeeds() {
+        let state = test_state();
+        let token = login(app(state.clone())).await;
+        let resp = app(state).oneshot(with_auth(Request::builder().uri("/api/v1/projects").body(Body::empty()).unwrap(), &token)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "valid token must reach the handler");
+    }
+
+    /// `POST /auth/logout` returns 204 and revokes the bearer token. A
+    /// subsequent `/auth/me` with the same token must 401.
+    #[tokio::test]
+    async fn logout_invalidates_token() {
+        let state = test_state();
+        let token = login(app(state.clone())).await;
+
+        // Logout.
+        let resp = app(state.clone())
+            .oneshot(with_auth(Request::builder().method("POST").uri("/api/v1/auth/logout").body(Body::empty()).unwrap(), &token))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT, "logout must yield 204");
+
+        // The revoked token must no longer reach `/auth/me`.
+        let resp = app(state).oneshot(with_auth(Request::builder().uri("/api/v1/auth/me").body(Body::empty()).unwrap(), &token)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "revoked token must yield 401");
     }
 }
