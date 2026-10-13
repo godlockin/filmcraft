@@ -1,0 +1,40 @@
+.import-mode {
+  position: fixed;
+  inset: var(--header-h) 0 var(--status-h) 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--app-bg);
+  color: var(--text);
+  overflow: hidden;
+  z-index: 10;
+}
+
+.import-mode-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: var(--tab-h);
+  padding: 0 12px;
+  background: var(--header-bg);
+  border-bottom: 1px solid var(--separator);
+}
+
+.import-mode-title {
+  font-size: var(--heading-size);
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: 0.2px;
+}
+
+.import-mode-close {
+  background: var(--hover);
+  border: 1px solid var(--field-border);
+  color: var(--text);
+  padding: 4px 12px;
+  border-radius: var(--radius-sm);
+  font-size: var(--small-size);
+  cursor: pointer;
+}
+.import-mode-close:hover {
+  background: var(--pressed);
+}
