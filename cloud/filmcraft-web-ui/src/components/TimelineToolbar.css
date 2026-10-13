@@ -1,0 +1,43 @@
+.timeline-toolbar {
+  display: flex;
+  gap: var(--gap);
+  padding: 4px 6px;
+  background: var(--panel-bg);
+  border-bottom: 1px solid var(--separator);
+}
+
+.timeline-tool {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--field-bg);
+  border: 1px solid var(--field-border);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  padding: 2px 6px;
+  font-size: var(--small-size);
+  cursor: pointer;
+}
+
+.timeline-tool:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.timeline-tool.is-active {
+  background: var(--row-selected);
+  color: var(--text);
+  border-color: var(--focus);
+}
+
+.timeline-tool-label {
+  font-weight: 500;
+}
+
+.timeline-tool-shortcut {
+  color: var(--text-faint);
+  font-size: 10px;
+  border: 1px solid var(--separator);
+  border-radius: 2px;
+  padding: 0 3px;
+}

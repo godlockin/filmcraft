@@ -1,0 +1,28 @@
+.timeline-automation {
+  position: relative;
+  background: var(--field-bg);
+  border-top: 1px solid var(--separator);
+  width: 100%;
+  overflow: hidden;
+}
+
+.timeline-automation-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.timeline-automation-line {
+  stroke: var(--hot-text);
+  stroke-width: 0.6;
+  vector-effect: non-scaling-stroke;
+}
+
+.timeline-automation-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-faint);
+  font-size: var(--small-size);
+}

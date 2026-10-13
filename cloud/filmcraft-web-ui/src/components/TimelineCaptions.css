@@ -1,0 +1,37 @@
+.timeline-captions {
+  position: relative;
+  background: var(--field-bg);
+  border-top: 1px solid var(--separator);
+  width: 100%;
+  overflow: hidden;
+}
+
+.timeline-caption-block {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  padding: 0 4px;
+  color: #111;
+  font-size: 10px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.timeline-caption-text {
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+.timeline-captions-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-faint);
+  font-size: var(--small-size);
+}

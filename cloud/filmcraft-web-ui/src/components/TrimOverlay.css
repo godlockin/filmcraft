@@ -1,0 +1,65 @@
+.trim-overlay {
+  position: absolute;
+  top: 0;
+  left: 96px;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+  pointer-events: auto;
+}
+
+.trim-overlay-row {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--panel-bg);
+  border-bottom: 1px solid var(--separator);
+  align-items: center;
+}
+
+.trim-label {
+  color: var(--text-dim);
+  font-size: var(--small-size);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.trim-input {
+  background: var(--field-bg);
+  color: var(--text);
+  border: 1px solid var(--field-border);
+  border-radius: var(--radius-sm);
+  padding: 2px 4px;
+  font-size: var(--small-size);
+  width: 80px;
+}
+
+.trim-btn {
+  background: var(--field-bg);
+  border: 1px solid var(--field-border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  padding: 2px 8px;
+  font-size: var(--small-size);
+  cursor: pointer;
+}
+.trim-btn:hover {
+  background: var(--hover);
+}
+
+.trim-overlay-bars {
+  position: relative;
+  flex: 1 1 auto;
+}
+
+.trim-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: var(--playhead);
+  pointer-events: none;
+}
