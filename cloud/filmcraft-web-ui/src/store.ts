@@ -28,6 +28,20 @@ import { loadRecent, pushRecent } from "./lib/history";
 import { clearAuth, getAuth, setAuth, type AuthState } from "./lib/auth";
 import type { ConnectionState, CommandInfo } from "./types";
 
+/** One entry in the event log ring buffer (M3.8). */
+export interface EventLogEntry {
+  /** Engine command id (e.g. `timeline.move`). */
+  command: string;
+  /** Wall-clock ms when the call returned. */
+  timestamp: number;
+  /** Call duration in milliseconds. */
+  durationMs: number;
+  /** True if the call returned without throwing. */
+  ok: boolean;
+  /** Optional error message when `ok === false`. */
+  error?: string;
+}
+
 /** Body of `POST /api/v1/auth/login` and its 200-response shape. */
 interface LoginResponse {
   ok: boolean;
@@ -69,6 +83,59 @@ export interface EngineState {
   /** Time of the last successful reply — null until first success. */
   lastOkAt: number | null;
 
+  // ----- timeline slice (M3.3) -----
+  /**
+   * Last `sequence.inspect` result, narrowed into the small shape the
+   * cloud timeline panel cares about. `null` until the first successful
+   * call. The M3 plan uses `sequence.inspect` as the canonical
+   * timeline query when no dedicated `timeline.read` exists.
+   */
+  timeline: {
+    /** Last computed sequence length in ticks. */
+    duration: number;
+    /** Last playhead position in ticks. */
+    playhead: number;
+    /** Tracks currently shown by the timeline panel. */
+    tracks: { id: string; kind: "video" | "audio" }[];
+    /** Clips currently shown by the timeline panel. */
+    clips: { id: string; track: string; in: number; out: number; label?: string }[];
+  } | null;
+
+  // ----- project slice (M3.3) -----
+  /** Last `project.inspect` result, kept verbatim. `null` until loaded. */
+  projectInspect: unknown;
+  /** Selected media item from the project panel. `null` until picked. */
+  selectedMedia:
+    | { name: string; url: string }
+    | null;
+
+  // ----- ui slice (M3.2) -----
+  /**
+   * Top-level UI state for the cloud app shell. Independent of the
+   * engine session: it survives project switches and reloads.
+   *
+   *   - `activeMode` — which of the Import / Edit / Export shells is
+   *     currently shown. The dock is mounted only when the mode is
+   *     "edit"; the other two are full-screen overlays (M3.9, M3.10).
+   *   - `quickExportOpen` — M3.10 popup anchored to the Header.
+   */
+  ui: {
+    activeMode: "import" | "edit" | "export";
+    quickExportOpen: boolean;
+    /**
+     * M3.11: `shortcutsOpen` controls the Header's "Window > Keyboard
+     * Shortcuts" dialog. Lives in the UI slice because every Header /
+     * dialog render goes through the singleton store.
+     */
+    shortcutsOpen: boolean;
+    /**
+     * Active timeline edit tool. Lives in the UI slice (M3.6) — the
+     * engine has no `tool.*` command yet, so the toolbar is local UI
+     * state that other panels (shortcut map, future overlay) can read.
+     */
+    activeTool: "selection" | "ripple" | "razor" | "hand";
+  };
+
   // ----- engine surface (small M2.2 subset; M2.3+ will add timeline ops) -----
   /** Last `sequence.inspect` result. */
   sequenceInfo: EngineResult;
@@ -80,6 +147,13 @@ export interface EngineState {
   rawFcproj: RawFcproj;
   /** Most-recently-used command ids (MRU first), persisted across reloads. */
   recentCommands: string[];
+  /**
+   * Ring buffer of the last 50 engine operations for the Event Log
+   * panel (M3.8). Newest entry is at index 0. Each entry records the
+   * command id, the wall-clock timestamp, the call duration, and
+   * whether the call succeeded.
+   */
+  eventLog: EventLogEntry[];
 
   // ----- auth (M2.7b) -----
   /**
@@ -109,9 +183,13 @@ export interface EngineState {
    * list (localStorage) only on success so the MRU reflects commands
    * that actually worked.
    */
-  runCommand: (command: string) => Promise<EngineResult>;
+  runCommand: (command: string, params?: Record<string, unknown>) => Promise<EngineResult>;
   /** Force-refresh the recent list (e.g. after the user clears it). */
   reloadRecentCommands: () => void;
+  /** Push a single entry onto the event-log ring (M3.8). */
+  logEvent: (entry: EventLogEntry) => void;
+  /** Drop every entry from the event log (M3.8). */
+  clearEventLog: () => void;
   /** Load any persisted auth slice from localStorage into the store. Idempotent. */
   hydrateAuth: () => void;
   /**
@@ -128,6 +206,20 @@ export interface EngineState {
    * the UI returns to the login gate.
    */
   logout: () => Promise<void>;
+
+  // ----- ui slice actions (M3.2) -----
+  /** Switch the top-level mode (Import / Edit / Export). */
+  setMode: (mode: "import" | "edit" | "export") => void;
+  /** Toggle the Header's Quick Export popup (M3.10). */
+  setQuickExportOpen: (open: boolean) => void;
+  /** Toggle the Header's Keyboard Shortcuts dialog (M3.11). */
+  setShortcutsOpen: (open: boolean) => void;
+  /** Pick a timeline edit tool (M3.6). */
+  setActiveTool: (tool: "selection" | "ripple" | "razor" | "hand") => void;
+
+  // ----- project slice actions (M3.3) -----
+  /** Set / clear the currently selected media item from the project panel. */
+  setSelectedMedia: (media: { name: string; url: string } | null) => void;
 }
 
 /** Internal helper that gets / sets `client` outside React render. */
@@ -149,6 +241,8 @@ export const useEngineStore = create<EngineState>((set, get) => ({
   // unit tests, denied-storage browsers), so this is safe to call
   // unconditionally.
   recentCommands: loadRecent(),
+  // M3.8: event-log ring buffer. Empty until `runCommand` records.
+  eventLog: [],
   // Auth is NOT eagerly hydrated here — the store is also constructed on
   // the server side (Vite SSR, unit tests in node) and on a fresh client
   // mount. The actual `getAuth()` call lives in `hydrateAuth()` which
@@ -157,6 +251,36 @@ export const useEngineStore = create<EngineState>((set, get) => ({
   // shows briefly on first paint and then snaps to the real state.
   auth: null,
   authError: null,
+  // M3.2: ui slice. `activeMode` defaults to "edit" so the docked layout
+  // is the first thing the user sees after auth. The other two are
+  // full-screen overlays mounted in M3.9 / M3.10.
+  ui: {
+    activeMode: "edit" as const,
+    quickExportOpen: false,
+    shortcutsOpen: false,
+    activeTool: "selection" as const,
+  },
+  // M3.3: timeline / project slices. Both `null` until the panels call
+  // their respective engine commands.
+  timeline: null,
+  projectInspect: null,
+  selectedMedia: null,
+
+  setMode(mode) {
+    set((s) => ({ ui: { ...s.ui, activeMode: mode } }));
+  },
+
+  setQuickExportOpen(open) {
+    set((s) => ({ ui: { ...s.ui, quickExportOpen: open } }));
+  },
+
+  setShortcutsOpen(open) {
+    set((s) => ({ ui: { ...s.ui, shortcutsOpen: open } }));
+  },
+
+  setActiveTool(tool) {
+    set((s) => ({ ui: { ...s.ui, activeTool: tool } }));
+  },
 
   async connect(projectId: string): Promise<void> {
     if (get().activeProject === projectId && get().connectionState === "open") {
@@ -220,10 +344,23 @@ export const useEngineStore = create<EngineState>((set, get) => ({
         command: "sequence.inspect",
         params: {},
       });
-      set({ sequenceInfo: result, lastOkAt: Date.now(), lastError: null });
+      // M3.3: keep populating the small timeline slice in addition to
+      // the raw `sequenceInfo` so the dock's Timeline panel doesn't
+      // have to re-parse the result itself.
+      set({
+        sequenceInfo: result,
+        timeline: extractTimeline(result),
+        lastOkAt: Date.now(),
+        lastError: null,
+      });
     } catch (e) {
       set({ lastError: e instanceof Error ? e.message : String(e) });
     }
+  },
+
+  /** Project slice (M3.3). */
+  setSelectedMedia(media: { name: string; url: string } | null): void {
+    set({ selectedMedia: media });
   },
 
   async setPreference(key: string, value: unknown): Promise<void> {
@@ -309,40 +446,100 @@ export const useEngineStore = create<EngineState>((set, get) => ({
     set({ rawFcproj: null });
   },
 
-  async runCommand(command: string): Promise<EngineResult> {
+  async runCommand(command: string, params?: Record<string, unknown>): Promise<EngineResult> {
     // No-op when the WS isn't ready — the palette disables its buttons
     // while the connection is closed, but a programmatic caller might
     // still slip through. Guard at the boundary instead of trusting the UI.
     if (client === null) {
       const err = new Error("WebSocket not connected");
-      set({ lastError: err.message });
+      const entry: EventLogEntry = {
+        command,
+        timestamp: Date.now(),
+        durationMs: 0,
+        ok: false,
+        error: err.message,
+      };
+      set({
+        lastError: err.message,
+        eventLog: [entry, ...get().eventLog].slice(0, 50),
+      });
       throw err;
     }
     if (typeof command !== "string" || command.length === 0) {
       const err = new Error("command id is empty");
-      set({ lastError: err.message });
+      const entry: EventLogEntry = {
+        command,
+        timestamp: Date.now(),
+        durationMs: 0,
+        ok: false,
+        error: err.message,
+      };
+      set({
+        lastError: err.message,
+        eventLog: [entry, ...get().eventLog].slice(0, 50),
+      });
       throw err;
     }
+    const t0 =
+      typeof performance !== "undefined" && typeof performance.now === "function"
+        ? performance.now()
+        : Date.now();
     try {
       const result = await client.call("engine.execute", {
         command,
-        params: {},
+        params: params ?? {},
       });
       pushRecent(command);
+      const t1 =
+        typeof performance !== "undefined" && typeof performance.now === "function"
+          ? performance.now()
+          : Date.now();
+      const entry: EventLogEntry = {
+        command,
+        timestamp: Date.now(),
+        durationMs: Math.max(0, t1 - t0),
+        ok: true,
+      };
       set({
         recentCommands: loadRecent(),
         lastOkAt: Date.now(),
         lastError: null,
+        eventLog: [entry, ...get().eventLog].slice(0, 50),
       });
       return result;
     } catch (e) {
-      set({ lastError: e instanceof Error ? e.message : String(e) });
+      const t1 =
+        typeof performance !== "undefined" && typeof performance.now === "function"
+          ? performance.now()
+          : Date.now();
+      const msg = e instanceof Error ? e.message : String(e);
+      const entry: EventLogEntry = {
+        command,
+        timestamp: Date.now(),
+        durationMs: Math.max(0, t1 - t0),
+        ok: false,
+        error: msg,
+      };
+      set({
+        lastError: msg,
+        eventLog: [entry, ...get().eventLog].slice(0, 50),
+      });
       throw e;
     }
   },
 
   reloadRecentCommands(): void {
     set({ recentCommands: loadRecent() });
+  },
+
+  logEvent(entry) {
+    set({
+      eventLog: [entry, ...get().eventLog].slice(0, 50),
+    });
+  },
+
+  clearEventLog() {
+    set({ eventLog: [] });
   },
 
   hydrateAuth(): void {
@@ -407,6 +604,99 @@ export const useEngineStore = create<EngineState>((set, get) => ({
     set({ auth: null, authError: netError });
   },
 }));
+
+/**
+ * Narrow a raw `sequence.inspect` reply into the small shape the
+ * cloud timeline panel cares about. The function is shared between
+ * the store (M3.3 keeps the slice in sync) and the TimelinePanel
+ * itself (when called outside React). Unknown structures yield an
+ * empty timeline rather than throwing — the panel keeps its last
+ * data and renders a placeholder row.
+ */
+function extractTimeline(
+  result: unknown,
+):
+  | {
+      duration: number;
+      playhead: number;
+      tracks: { id: string; kind: "video" | "audio" }[];
+      clips: { id: string; track: string; in: number; out: number; label?: string }[];
+    }
+  | null {
+  if (result === null || typeof result !== "object") return null;
+  const r = result as Record<string, unknown>;
+  const duration = readNum(r.duration) ?? readNum(r.length) ?? 0;
+  const playhead = readNum(r.playhead) ?? readNum(r.cursor) ?? 0;
+  const tracks: { id: string; kind: "video" | "audio" }[] = [];
+  for (const key of ["tracks", "videoTracks", "audioTracks"]) {
+    const list = r[key];
+    if (!Array.isArray(list)) continue;
+    for (const t of list) {
+      if (typeof t === "string") tracks.push({ id: t, kind: "video" });
+      else if (t !== null && typeof t === "object") {
+        const o = t as Record<string, unknown>;
+        const id =
+          typeof o.id === "string"
+            ? o.id
+            : typeof o.name === "string"
+              ? o.name
+              : null;
+        if (id === null) continue;
+        const kind: "video" | "audio" =
+          o.kind === "audio" || o.type === "audio" ? "audio" : "video";
+        tracks.push({ id, kind });
+      }
+    }
+  }
+  const clips: {
+    id: string;
+    track: string;
+    in: number;
+    out: number;
+    label?: string;
+  }[] = [];
+  for (const key of ["clips", "items", "segments"]) {
+    const list = r[key];
+    if (!Array.isArray(list)) continue;
+    for (const c of list) {
+      if (c === null || typeof c !== "object") continue;
+      const o = c as Record<string, unknown>;
+      const id =
+        typeof o.id === "string"
+          ? o.id
+          : typeof o.uuid === "string"
+            ? o.uuid
+            : null;
+      if (id === null) continue;
+      const track =
+        typeof o.track === "string"
+          ? o.track
+          : typeof o.trackId === "string"
+            ? o.trackId
+            : "V1";
+      const inT = readNum(o.in) ?? readNum(o.start) ?? 0;
+      const outT = readNum(o.out) ?? readNum(o.end) ?? inT;
+      clips.push({
+        id,
+        track,
+        in: inT,
+        out: outT,
+        label:
+          typeof o.label === "string"
+            ? o.label
+            : typeof o.name === "string"
+              ? o.name
+              : undefined,
+      });
+    }
+  }
+  return { duration, playhead, tracks, clips };
+}
+
+function readNum(v: unknown): number | null {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  return null;
+}
 
 /** First `n` bytes rendered as hex pairs separated by spaces. */
 function hexPreview(bytes: Uint8Array, n: number): string {

@@ -1,0 +1,25 @@
+.transport {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gap);
+}
+
+.transport-btn {
+  width: 28px;
+  height: 24px;
+  padding: 0;
+  font-size: var(--body-size);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: var(--field-bg);
+  color: var(--text);
+  border: 1px solid var(--field-border);
+}
+.transport-btn:hover:not(:disabled) {
+  background: var(--hover);
+}
+.transport-btn:active:not(:disabled) {
+  background: var(--pressed);
+}
