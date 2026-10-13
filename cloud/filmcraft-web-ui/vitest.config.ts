@@ -19,5 +19,11 @@ export default defineConfig({
     // Short per-test timeout: pending-call cleanup is verified by
     // the disconnect / close tests. Anything past 5s is a bug.
     testTimeout: 5000,
+    // M3.x: cap concurrency to 1 worker — happy-dom leaks a few
+    // hundred KB per concurrent React render, and running
+    // component-heavy suites in parallel exhausts the worker's
+    // heap (8GB default).
+    pool: "forks",
+    poolOptions: { forks: { singleFork: true } },
   },
 });

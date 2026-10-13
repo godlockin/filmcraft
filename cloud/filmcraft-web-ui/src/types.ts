@@ -98,6 +98,11 @@ export interface CommandInfo {
   label?: string;
   menu?: string[];
   shortcut?: string | null;
+  /** M3.11: every binding for this command. */
+  shortcuts?: string[];
+  /** M3.11: the binding as defined in the registry (often identical
+   * to `shortcut`). */
+  defaultShortcut?: string | null;
 }
 
 export interface ListCommandsResult {
