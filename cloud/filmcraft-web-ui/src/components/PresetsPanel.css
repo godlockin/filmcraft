@@ -1,0 +1,58 @@
+.presets-root {
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  height: 100%;
+  overflow: auto;
+}
+
+.presets-empty {
+  color: var(--text-faint);
+  font-size: var(--small-size);
+  text-align: center;
+  padding: 12px;
+}
+
+.presets-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.presets-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px;
+  background: var(--field-bg);
+  border: 1px solid var(--field-border);
+  border-radius: var(--radius-sm);
+  font-size: var(--small-size);
+  color: var(--text);
+}
+.presets-name {
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.presets-format {
+  color: var(--text-faint);
+  font-family: monospace;
+}
+.presets-apply {
+  background: var(--hover);
+  border: 1px solid var(--field-border);
+  color: var(--text);
+  padding: 1px 8px;
+  font-size: var(--small-size);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.presets-apply:hover {
+  background: var(--accent);
+}

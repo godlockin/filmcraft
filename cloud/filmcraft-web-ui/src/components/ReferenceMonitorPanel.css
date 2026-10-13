@@ -1,0 +1,50 @@
+.reference-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  gap: 6px;
+  padding: 6px;
+}
+
+.reference-canvas-placeholder {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--field-bg);
+  border: 1px solid var(--field-border);
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  font-size: var(--heading-size);
+  min-height: 80px;
+}
+
+.reference-meta {
+  display: grid;
+  grid-template-columns: 60px 1fr;
+  gap: 2px 6px;
+  font-size: var(--small-size);
+  margin: 0;
+}
+.reference-meta dt {
+  color: var(--text-faint);
+}
+.reference-meta dd {
+  color: var(--text);
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.reference-meta-url {
+  font-family: monospace;
+  white-space: nowrap;
+}
+
+.reference-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-faint);
+  font-size: var(--small-size);
+}

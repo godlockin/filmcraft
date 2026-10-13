@@ -1,0 +1,57 @@
+.timecode-root {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 8px;
+}
+
+.timecode-primary {
+  font-family: monospace;
+  font-size: 28px;
+  text-align: center;
+  background: var(--field-bg);
+  color: var(--hot-text);
+  padding: 6px 10px;
+  border: 1px solid var(--field-border);
+  border-radius: var(--radius-sm);
+  letter-spacing: 2px;
+}
+
+.timecode-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 4px;
+}
+
+.timecode-cell {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 2px 6px;
+  background: var(--field-bg);
+  border: 1px solid var(--field-border);
+  border-radius: var(--radius-sm);
+}
+.timecode-cell-label {
+  color: var(--text-faint);
+  font-size: var(--small-size);
+}
+.timecode-cell-value {
+  color: var(--text);
+  font-family: monospace;
+  font-size: var(--body-size);
+}
+
+.timecode-meta {
+  color: var(--text-faint);
+  font-size: var(--small-size);
+  text-align: center;
+}
+
+.timecode-empty {
+  color: var(--text-faint);
+  text-align: center;
+  padding: 16px;
+  font-size: var(--small-size);
+}
