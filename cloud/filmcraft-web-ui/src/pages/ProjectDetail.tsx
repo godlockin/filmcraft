@@ -98,7 +98,11 @@ export default function ProjectDetail() {
 
       {selectedUrl && (
         <div className="video-player">
-          <video controls src={selectedUrl} preload="metadata" />
+          {/* `key={selectedUrl}` forces React to re-mount the <video>
+              when the user picks a different clip (or the auth token
+              changes after a re-login), so the browser doesn't reuse
+              a previous failed-load state. */}
+          <video key={selectedUrl} controls src={selectedUrl} preload="metadata" />
         </div>
       )}
 
