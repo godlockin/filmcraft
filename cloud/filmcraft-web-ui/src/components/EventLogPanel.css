@@ -1,0 +1,72 @@
+.event-log-empty {
+  color: var(--text-faint);
+  padding: 12px;
+  text-align: center;
+  font-size: var(--small-size);
+}
+
+.event-log-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  height: 100%;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+}
+
+.event-log-row {
+  display: grid;
+  grid-template-columns: 32px 1fr 64px 60px;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  font-size: var(--small-size);
+  color: var(--text);
+  border-bottom: 1px solid var(--separator);
+}
+
+.event-log-row.is-error .event-log-cmd {
+  color: var(--danger);
+}
+
+.event-log-status {
+  font-size: 9px;
+  border-radius: 2px;
+  text-align: center;
+  padding: 0 2px;
+  font-weight: 600;
+}
+.event-log-row.is-ok .event-log-status {
+  background: var(--render-green);
+  color: #111;
+}
+.event-log-row.is-error .event-log-status {
+  background: var(--danger);
+  color: #fff;
+}
+
+.event-log-cmd {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.event-log-time {
+  color: var(--text-faint);
+  text-align: right;
+}
+
+.event-log-duration {
+  color: var(--text-dim);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.event-log-error {
+  grid-column: 1 / -1;
+  color: var(--text-faint);
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
